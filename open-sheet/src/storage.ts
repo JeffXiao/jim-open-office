@@ -50,7 +50,7 @@ export function loadSnapshot(): Promise<IWorkbookData | null> {
     ).then((value) => (value as IWorkbookData | undefined) ?? null);
 }
 
-/** Delete the saved snapshot (used when resetting to the template). */
+/** Delete the saved snapshot (used when resetting to a blank workbook). */
 export function deleteSnapshot(): Promise<void> {
     return runTransaction('readwrite', (store) =>
         store.delete(CONFIG.IDB_WORKBOOK_KEY),
