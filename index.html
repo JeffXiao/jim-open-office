@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>AI Office — Sharpe Template (Univer Sheets POC)</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>AI Office <span>Sharpe Template · Univer Sheets proof of concept</span></h1>
+      <div id="app-toolbar" role="toolbar" aria-label="Workbook actions" focusgroup="toolbar wrap">
+        <div role="group" aria-label="File">
+          <button type="button" data-action="save" aria-label="Save workbook" title="Save workbook">
+            <svg aria-hidden="true"><use data-icon="save"></use></svg><span>Save</span>
+          </button>
+          <button type="button" data-action="export" aria-label="Export as Excel file (.xlsx)" title="Export as Excel file (.xlsx)">
+            <svg aria-hidden="true"><use data-icon="download"></use></svg><span>Export .xlsx</span>
+          </button>
+        </div>
+        <div role="separator" aria-orientation="vertical"></div>
+        <div role="group" aria-label="Template">
+          <button type="button" data-action="reset" aria-label="Reset to the Sharpe template" title="Reset to the Sharpe template">
+            <svg aria-hidden="true"><use data-icon="reset"></use></svg><span>Reset template</span>
+          </button>
+        </div>
+      </div>
+    </header>
+    <main id="univer-container" aria-label="Spreadsheet"></main>
+    <footer class="app-footer">
+      <p id="status" role="status">Loading the Sharpe template…</p>
+    </footer>
+    <dialog id="reset-dialog" closedby="any" aria-labelledby="reset-title">
+      <h2 id="reset-title">Reset to the Sharpe template?</h2>
+      <p>
+        This replaces the current workbook with the original Sharpe template.
+        Your edits will be lost.
+      </p>
+      <form method="dialog">
+        <button type="submit" value="cancel" autofocus>Cancel</button>
+        <button type="submit" value="confirm">Reset workbook</button>
+      </form>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

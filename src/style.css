@@ -1,0 +1,208 @@
+/**
+ * App-shell stylesheet. Only the shell is ours — the spreadsheet itself is
+ * rendered by Univer and styled by its own CSS.
+ *
+ * Applied guides (see the delivery disclosure):
+ * - css: cascade layers declared upfront, design tokens on :root, logical
+ *   properties, no global resets, no BEM.
+ * - dialog: dialog:modal scroll containment, backdrop styling, never set
+ *   display on dialog unconditionally.
+ */
+
+@layer reset, base, theme, components;
+
+@layer reset {
+    body {
+        margin: 0;
+    }
+
+    h1,
+    h2,
+    p {
+        margin: 0;
+    }
+
+    button {
+        font: inherit;
+    }
+}
+
+@layer base {
+    :root {
+        --color-text: #1f2328;
+        --color-text-muted: #59636e;
+        --color-bg: #ffffff;
+        --color-surface: #f6f8fa;
+        --color-border: #d1d9e0;
+        --color-accent: #0969da;
+        --color-accent-text: #ffffff;
+        --color-focus: #0969da;
+        --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+        --space-sm: 0.5rem;
+        --space-md: 1rem;
+        --toolbar-button-size: 2rem;
+
+        color-scheme: light dark;
+        font-family: var(--font-sans);
+        color: var(--color-text);
+        background: var(--color-bg);
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --color-text: #e6edf3;
+            --color-text-muted: #8d96a3;
+            --color-bg: #0d1117;
+            --color-surface: #161b22;
+            --color-border: #30363d;
+            --color-accent: #2f81f7;
+            --color-accent-text: #ffffff;
+            --color-focus: #2f81f7;
+        }
+    }
+
+    body {
+        display: flex;
+        flex-direction: column;
+        block-size: 100dvh;
+    }
+}
+
+@layer components {
+    .app-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-sm) var(--space-md);
+        padding: var(--space-sm) var(--space-md);
+        background: var(--color-surface);
+        border-block-end: 1px solid var(--color-border);
+    }
+
+    .app-header h1 {
+        font-size: 1.1rem;
+        font-weight: 600;
+    }
+
+    .app-header h1 span {
+        font-weight: 400;
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        margin-inline-start: var(--space-sm);
+    }
+
+    #app-toolbar {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        margin-inline-start: auto;
+    }
+
+    #app-toolbar [role='group'] {
+        display: flex;
+        gap: calc(var(--space-sm) / 2);
+    }
+
+    #app-toolbar [role='separator'] {
+        inline-size: 1px;
+        block-size: 1.5rem;
+        background: var(--color-border);
+    }
+
+    #app-toolbar button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        min-inline-size: var(--toolbar-button-size);
+        min-block-size: var(--toolbar-button-size);
+        padding-inline: 0.5rem;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-bg);
+        color: var(--color-text);
+        cursor: pointer;
+    }
+
+    #app-toolbar button:hover {
+        background: var(--color-surface);
+    }
+
+    #app-toolbar button:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
+    }
+
+    #app-toolbar button svg {
+        inline-size: 1rem;
+        block-size: 1rem;
+        fill: currentColor;
+    }
+
+    #univer-container {
+        flex: 1;
+        min-block-size: 0;
+    }
+
+    .app-footer {
+        padding: var(--space-sm) var(--space-md);
+        background: var(--color-surface);
+        border-block-start: 1px solid var(--color-border);
+        font-size: 0.85rem;
+        color: var(--color-text-muted);
+    }
+
+    dialog:modal {
+        overscroll-behavior: contain;
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        background: var(--color-bg);
+        color: var(--color-text);
+        padding: var(--space-md);
+        max-inline-size: 28rem;
+    }
+
+    dialog::backdrop {
+        overflow: hidden;
+        overscroll-behavior: contain;
+        background-color: rgb(0 0 0 / 0.5);
+    }
+
+    dialog h2 {
+        font-size: 1.05rem;
+        margin-block-end: var(--space-sm);
+    }
+
+    dialog form {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--space-sm);
+        margin-block-start: var(--space-md);
+    }
+
+    dialog form button {
+        min-block-size: var(--toolbar-button-size);
+        padding-inline: 0.75rem;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-bg);
+        color: var(--color-text);
+        cursor: pointer;
+    }
+
+    dialog form button[value='confirm'] {
+        background: var(--color-accent);
+        border-color: var(--color-accent);
+        color: var(--color-accent-text);
+    }
+
+    dialog form button:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #app-toolbar button {
+        transition: none;
+    }
+}
