@@ -5,41 +5,72 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <title>AI Office — Sharpe Template (Univer Sheets POC)</title>
+    <title>Open Sheet — Jim Open Office</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
     <header class="app-header">
-      <h1>AI Office <span>Sharpe Template · Univer Sheets proof of concept</span></h1>
+      <h1>Open Sheet <span>Jim Open Office · Univer Sheets</span></h1>
       <div id="app-toolbar" role="toolbar" aria-label="Workbook actions" focusgroup="toolbar wrap">
         <div role="group" aria-label="File">
           <button type="button" data-action="save" aria-label="Save workbook" title="Save workbook">
             <svg aria-hidden="true"><use data-icon="save"></use></svg><span>Save</span>
           </button>
+          <button type="button" data-action="open" aria-label="Open an Excel file (.xlsx)" title="Open an Excel file (.xlsx)">
+            <svg aria-hidden="true"><use data-icon="open"></use></svg><span>Open</span>
+          </button>
           <button type="button" data-action="export" aria-label="Export as Excel file (.xlsx)" title="Export as Excel file (.xlsx)">
             <svg aria-hidden="true"><use data-icon="download"></use></svg><span>Export .xlsx</span>
           </button>
+          <input type="file" id="open-file-input" class="hidden" aria-hidden="true" tabindex="-1" />
         </div>
         <div role="separator" aria-orientation="vertical"></div>
-        <div role="group" aria-label="Template">
-          <button type="button" data-action="reset" aria-label="Reset to the Sharpe template" title="Reset to the Sharpe template">
-            <svg aria-hidden="true"><use data-icon="reset"></use></svg><span>Reset template</span>
+        <div role="group" aria-label="Workbook">
+          <button type="button" data-action="reset" aria-label="Reset to a blank workbook" title="Reset to a blank workbook">
+            <svg aria-hidden="true"><use data-icon="reset"></use></svg><span>Reset</span>
+          </button>
+        </div>
+        <div role="separator" aria-orientation="vertical"></div>
+        <div role="group" aria-label="Account" class="auth-group">
+          <div id="google-signin-button"></div>
+          <button type="button" data-action="signin" id="signin-button" aria-label="Sign in with Google" title="Sign in with Google (optional)">
+            Sign in
+          </button>
+          <span id="signed-in-user" class="hidden">
+            <img id="signed-in-avatar" alt="" referrerpolicy="no-referrer" />
+            <span id="signed-in-name"></span>
+          </span>
+          <button type="button" data-action="signout" id="signout-button" class="hidden" aria-label="Sign out" title="Sign out">
+            Sign out
           </button>
         </div>
       </div>
     </header>
     <main id="univer-container" aria-label="Spreadsheet"></main>
     <footer class="app-footer">
-      <p id="status" role="status">Loading the Sharpe template…</p>
+      <p id="status" role="status">Loading…</p>
     </footer>
     <dialog id="reset-dialog" closedby="any" aria-labelledby="reset-title">
-      <h2 id="reset-title">Reset to the Sharpe template?</h2>
+      <h2 id="reset-title">Reset to a blank workbook?</h2>
       <p>
-        This replaces the current workbook with the original Sharpe template.
+        This replaces the current workbook with an empty one.
         Your edits will be lost.
       </p>
       <form method="dialog">
         <button type="submit" value="cancel" autofocus>Cancel</button>
         <button type="submit" value="confirm">Reset workbook</button>
+      </form>
+    </dialog>
+    <dialog id="open-dialog" closedby="any" aria-labelledby="open-title">
+      <h2 id="open-title">Open this file?</h2>
+      <p>
+        This replaces the current workbook with the contents of
+        <span id="open-file-name"></span>.
+        Your edits will be lost.
+      </p>
+      <form method="dialog">
+        <button type="submit" value="cancel" autofocus>Cancel</button>
+        <button type="submit" value="confirm">Open file</button>
       </form>
     </dialog>
     <script type="module" src="/src/main.ts"></script>
