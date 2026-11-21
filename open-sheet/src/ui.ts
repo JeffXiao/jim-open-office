@@ -13,20 +13,41 @@
  * - css: cascade layers and design tokens live in style.css.
  */
 
+import type { SignedInUser } from './auth';
+import { CONFIG } from './config';
+
 export type ShellActions = {
     onSave: () => void;
     onExport: () => void;
     /** Called with true when the user confirms the reset, false otherwise. */
     onResetDecision: (confirmed: boolean) => void;
+    /** A file was picked in the Open picker. */
+    onOpenFile: (file: File) => void;
+    /** Called with true when the user confirms opening it, false otherwise. */
+    onOpenDecision: (confirmed: boolean) => void;
+    /** The fallback Sign in button was clicked. */
+    onSignIn: () => void;
+    /** The Sign out button was clicked. */
+    onSignOut: () => void;
 };
 
 export type Shell = {
     setStatus: (message: string) => void;
     openResetDialog: () => void;
+    /** Ask whether to replace the workbook with the picked file's contents. */
+    openConfirmDialog: (fileName: string) => void;
+    /** Show the signed-in state (name + avatar, Sign out button). */
+    setSignedIn: (user: SignedInUser) => void;
+    /** Show the signed-out state (Sign in button, or Google's button). */
+    setSignedOut: () => void;
+    /** Hide the fallback Sign in button once Google's button has rendered. */
+    setGoogleButtonRendered: (rendered: boolean) => void;
+    /** The slot Google's own sign-in button renders into. */
+    getGoogleButtonSlot: () => HTMLElement;
 };
 
 /** All toolbar buttons carry one of these actions. */
-const TOOLBAR_ACTIONS = ['save', 'export', 'reset'] as const;
+const TOOLBAR_ACTIONS = ['save', 'open', 'export', 'reset', 'signin', 'signout'] as const;
 type ToolbarAction = (typeof TOOLBAR_ACTIONS)[number];
 
 function isToolbarAction(value: string | null): value is ToolbarAction {
@@ -48,28 +69,31 @@ function installFocusgroupFallback(toolbar: HTMLElement): void {
     });
     toolbar.addEventListener('keydown', (event) => {
         const current = document.activeElement;
-        if (!(current instanceof HTMLButtonElement) || !buttons.includes(current)) {
+        // Only visible buttons take part: Sign out is hidden while signed
+        // out, and the fallback Sign in is hidden once Google's button renders.
+        const visible = buttons.filter((button) => !button.classList.contains('hidden'));
+        if (!(current instanceof HTMLButtonElement) || !visible.includes(current)) {
             return;
         }
-        const index = buttons.indexOf(current);
+        const index = visible.indexOf(current);
         let next: number | null = null;
         if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-            next = (index + 1) % buttons.length;
+            next = (index + 1) % visible.length;
         } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-            next = (index - 1 + buttons.length) % buttons.length;
+            next = (index - 1 + visible.length) % visible.length;
         } else if (event.key === 'Home') {
             next = 0;
         } else if (event.key === 'End') {
-            next = buttons.length - 1;
+            next = visible.length - 1;
         }
         if (next === null) {
             return;
         }
         event.preventDefault();
-        buttons.forEach((button, buttonIndex) => {
-            button.tabIndex = buttonIndex === next ? 0 : -1;
-        });
-        buttons[next].focus();
+        for (const button of buttons) {
+            button.tabIndex = button === visible[next] ? 0 : -1;
+        }
+        visible[next].focus();
     });
 }
 
@@ -110,13 +134,41 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
     const toolbar = document.querySelector<HTMLElement>('#app-toolbar');
     const status = document.querySelector<HTMLElement>('#status');
     const dialog = document.querySelector<HTMLDialogElement>('#reset-dialog');
-    if (toolbar === null || status === null || dialog === null) {
-        throw new Error('App shell markup is missing (toolbar, status, or dialog).');
+    const openDialog = document.querySelector<HTMLDialogElement>('#open-dialog');
+    const openFileName = document.querySelector<HTMLElement>('#open-file-name');
+    const fileInput = document.querySelector<HTMLInputElement>('#open-file-input');
+    const googleSlot = document.querySelector<HTMLElement>('#google-signin-button');
+    const signinButton = document.querySelector<HTMLButtonElement>('#signin-button');
+    const signoutButton = document.querySelector<HTMLButtonElement>('#signout-button');
+    const signedInUser = document.querySelector<HTMLElement>('#signed-in-user');
+    const signedInAvatar = document.querySelector<HTMLImageElement>('#signed-in-avatar');
+    const signedInName = document.querySelector<HTMLElement>('#signed-in-name');
+    if (
+        toolbar === null ||
+        status === null ||
+        dialog === null ||
+        openDialog === null ||
+        openFileName === null ||
+        fileInput === null ||
+        googleSlot === null ||
+        signinButton === null ||
+        signoutButton === null ||
+        signedInUser === null ||
+        signedInAvatar === null ||
+        signedInName === null
+    ) {
+        throw new Error('App shell markup is missing (toolbar, status, dialog, or account area).');
     }
+
+    // Whether Google's own button has rendered into the slot. The signed-out
+    // view shows the slot when true, the fallback Sign in button otherwise.
+    let googleButtonRendered = false;
 
     wireSprite(spriteUrl);
     installFocusgroupFallback(toolbar);
     installLightDismissFallback(dialog);
+    installLightDismissFallback(openDialog);
+    fileInput.accept = CONFIG.OPEN_ACCEPT;
 
     // One delegated click listener for the whole toolbar (see the skill:
     // event delegation, never a fresh listener per button).
@@ -131,10 +183,26 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
         }
         if (action === 'save') {
             actions.onSave();
+        } else if (action === 'open') {
+            fileInput.click();
         } else if (action === 'export') {
             actions.onExport();
+        } else if (action === 'signin') {
+            actions.onSignIn();
+        } else if (action === 'signout') {
+            actions.onSignOut();
         } else {
             dialog.showModal();
+        }
+    });
+
+    // The file picker reports through change; clearing the value lets the
+    // user pick the same file again afterwards.
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = '';
+        if (file !== undefined) {
+            actions.onOpenFile(file);
         }
     });
 
@@ -146,12 +214,59 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
         actions.onResetDecision(confirmed);
     });
 
+    openDialog.addEventListener('close', () => {
+        const confirmed = openDialog.returnValue === 'confirm';
+        openDialog.returnValue = '';
+        actions.onOpenDecision(confirmed);
+    });
+
     return {
         setStatus(message: string): void {
             status.textContent = message;
         },
         openResetDialog(): void {
             dialog.showModal();
+        },
+        openConfirmDialog(fileName: string): void {
+            openFileName.textContent = fileName;
+            openDialog.showModal();
+        },
+        setSignedIn(user: SignedInUser): void {
+            googleSlot.classList.add('hidden');
+            signinButton.classList.add('hidden');
+            if (user.picture !== '') {
+                signedInAvatar.src = user.picture;
+                signedInAvatar.classList.remove('hidden');
+            } else {
+                signedInAvatar.removeAttribute('src');
+                signedInAvatar.classList.add('hidden');
+            }
+            signedInName.textContent = user.name;
+            signedInUser.classList.remove('hidden');
+            signoutButton.classList.remove('hidden');
+        },
+        setSignedOut(): void {
+            signedInUser.classList.add('hidden');
+            signoutButton.classList.add('hidden');
+            signedInAvatar.removeAttribute('src');
+            signedInName.textContent = '';
+            if (googleButtonRendered) {
+                googleSlot.classList.remove('hidden');
+                signinButton.classList.add('hidden');
+            } else {
+                googleSlot.classList.add('hidden');
+                signinButton.classList.remove('hidden');
+            }
+        },
+        setGoogleButtonRendered(rendered: boolean): void {
+            googleButtonRendered = rendered;
+            if (rendered) {
+                googleSlot.classList.remove('hidden');
+                signinButton.classList.add('hidden');
+            }
+        },
+        getGoogleButtonSlot(): HTMLElement {
+            return googleSlot;
         },
     };
 }
