@@ -138,6 +138,28 @@
         fill: currentColor;
     }
 
+    #app-toolbar .auth-group {
+        align-items: center;
+    }
+
+    #app-toolbar .hidden {
+        display: none;
+    }
+
+    #signed-in-user {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.9rem;
+        white-space: nowrap;
+    }
+
+    #signed-in-avatar {
+        inline-size: 1.5rem;
+        block-size: 1.5rem;
+        border-radius: 50%;
+    }
+
     #univer-container {
         flex: 1;
         min-block-size: 0;
