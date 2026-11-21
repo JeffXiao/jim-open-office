@@ -1,8 +1,8 @@
-# AI Office — Univer Sheets proof of concept (Phase 1)
+# Open Sheet — Univer Sheets (Jim Open Office)
 
-A static Vite + TypeScript app embedding the Univer Sheets editor, with Jeff's
-Sharpe Ratio template pre-loaded so it can be judged side-by-side against
-GridBook. Phase 1 of the AI Built Office plan only — no Docs, no agent layer,
+A static Vite + TypeScript app embedding the Univer Sheets editor. It opens
+with a blank workbook — the user builds their own content. Part of the
+Jim Open Office suite (see the repo root README); no Docs, no agent layer,
 no paid Univer features, no server.
 
 ## Run it
@@ -17,17 +17,36 @@ npm run preview  # serve the production build locally
 ## What is in it
 
 - A working Univer Sheets editor (create/edit cells, formulas with
-  recalculation, bold and number formats, row/column sizing, two sheets).
-- The Sharpe template as the default workbook: 12 monthly returns, mean,
-  sample standard deviation, risk-free rate, and a formula-driven Sharpe
-  ratio cell (expected value **1.8189**, matching GridBook's one-click
-  Sharpe template).
+  recalculation, bold and number formats, row/column sizing).
+- A blank workbook on open (one empty sheet, "Sheet1"). Nothing is
+  pre-loaded; the user builds their own sheet.
 - Save/reload from IndexedDB (autosave ~800 ms after the last edit, plus a
   Save button and save on page hide).
 - One-click .xlsx export via SheetJS, with formulas preserved so Excel
   recalculates.
-- A minimal app shell: toolbar (Save / Export .xlsx / Reset template),
+- A minimal app shell: toolbar (Save / Export .xlsx / Reset),
   the sheet, a status line, and a native-dialog reset confirmation.
+- An optional Sign in button (Google). Signing in is never required: the
+  sheet works fully without it, and it does not gate anything. See
+  "Sign-in (optional)" below.
+
+## Sign-in (optional)
+
+- The toolbar has a Sign in button. When a Google OAuth client ID is
+  configured, Google's own "Sign in with Google" button renders there;
+  otherwise the plain button explains that setup is needed.
+- To enable it, paste the OAuth 2.0 client ID (Web application, Authorized
+  JavaScript origin `https://jeffxiao.github.io`) into `GOOGLE_CLIENT_ID`
+  in `src/config.ts`. No client secret is used or needed on a static site.
+- Signing in only identifies the user (name, email, avatar from the Google
+  ID token, whose issuer and expiry are checked in the browser). It does not
+  lock the sheet and does not separate workbooks per user — the workbook in
+  IndexedDB stays on the device either way. A purely client-side gate cannot
+  truly enforce access; real enforcement needs a backend, which Phase 1
+  does not have.
+- The identity lives in sessionStorage, so closing the tab signs the user
+  out. Sign out clears it and tells Google not to sign the user back in
+  automatically.
 
 ## Browser support
 
@@ -51,28 +70,46 @@ Univer, not by our code.
 | --- | --- |
 | `src/main.ts` | Entry: imports CSS, starts the App. |
 | `src/app.ts` | The App — owns Univer, the workbook, and the shell. |
-| `src/config.ts` | Frozen constants (ids, IndexedDB names, template numbers). |
-| `src/sharpe-template.ts` | Builds the template workbook snapshot (pure data). |
+| `src/auth.ts` | Optional Google sign-in (GIS): token decoding, session, button. |
+| `src/config.ts` | Frozen constants (ids, IndexedDB names, status text). |
+| `src/blank-workbook.ts` | Builds the blank workbook snapshot (pure data). |
 | `src/storage.ts` | IndexedDB save/load/delete of the snapshot. |
 | `src/exporter.ts` | Snapshot → SheetJS .xlsx (formulas preserved). |
-| `src/ui.ts` | Toolbar, status live region, reset dialog. |
+| `src/importer.ts` | Local .xlsx/.xls file → snapshot (the exporter's mirror). |
+| `src/ui.ts` | Toolbar, status live region, reset and open dialogs. |
 | `src/style.css` | Shell stylesheet (cascade layers, design tokens). |
-
-## Template assumption
-
-The Phase 1 plan does not specify the template's exact cells, and GridBook's
-template lives in a Muse artifact whose source is not readable from here. So
-the template is the standard worked example (returns column, mean, sample
-stdev, risk-free rate, Sharpe cell), with the monthly returns chosen so the
-computed Sharpe reproduces GridBook's worked-example value, 1.8189. If
-GridBook's actual returns differ, the numbers — not the formulas — are what
-differs.
 
 ## Test hook
 
-`window.__aiOffice` exposes `{ getSharpe(), setCell(address, value),
-getStatus() }` for the automated harness and manual checks. It is a
-development hook, not a user feature.
+`window.__aiOffice` exposes `{ setCell(address, value), getStatus(),
+inspectCell(address), listSheets() }` for the automated harness and manual
+checks. It is a development hook, not a user feature.
+
+## Testing
+
+Two layers, each covering what the other cannot reach:
+
+- `npm test` — unit tests (Vitest) in `tests/unit/`, no browser needed:
+  the frozen config, the blank workbook (including a regression test that
+  no Sharpe content can come back), the .xlsx exporter (cell types,
+  formulas with cached values, number formats, column widths, used range,
+  multiple sheets), the .xlsx importer (values, formulas, formats, column
+  widths, multiple sheets, grid growth, and an export→import round-trip),
+  IndexedDB persistence (save/load/overwrite/delete, against a minimal
+  in-memory IndexedDB stand-in), and Google sign-in token decoding
+  (valid, wrong-issuer, expired, and malformed tokens).
+- `node tests/verify.mjs` — the served-build check (Playwright): the app
+  boots in a real browser, the Univer sheet renders, formulas recalculate,
+  save/reload persists, export downloads, and the reset dialog works.
+  The browser parts the unit tests cannot reach — the Univer editor itself
+  and the toolbar/dialog shell — are covered here, not by fakes.
+- `npx vite build --outDir dist-import && node tests/verify-import.mjs` —
+  the Open flow in a real browser (its own port, 4174, so it never clashes
+  with the main harness): picking a file asks for confirmation, Cancel
+  leaves the workbook untouched, Confirm replaces it with the file's
+  contents (values, a recalculated formula, a formatted cell), and the
+  import survives a reload. Delete `dist-import/` afterwards — it is a
+  verification artifact, not part of the project.
 
 ## Versions (pinned)
 
