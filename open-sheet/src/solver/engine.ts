@@ -51,6 +51,8 @@ export type SolverOptions = {
     evaluate: (x: number[]) => SolverEvaluation | Promise<SolverEvaluation>;
     maxIterations?: number;
     tolerance?: number;
+    /** Override CONFIG.SOLVER_STAGNATION_LIMIT (for tests). */
+    stagnationLimit?: number;
 };
 
 export type SolverState = {
@@ -109,6 +111,7 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
     }
     const maxIterations = options.maxIterations ?? CONFIG.SOLVER_MAX_ITERATIONS;
     const tolerance = options.tolerance ?? CONFIG.SOLVER_TOLERANCE;
+    const stagnationLimit = options.stagnationLimit ?? CONFIG.SOLVER_STAGNATION_LIMIT;
 
     let status: SolverStatus = 'running';
     let iterations = 0;
@@ -121,6 +124,20 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
 
     let bestFeasible: Candidate | null = null;
     let bestInfeasible: Candidate | null = null;
+
+    /**
+     * Stagnation tracking: the iteration and objective of the last
+     * meaningful improvement to the best feasible point. A meaningful
+     * improvement is one larger than the convergence tolerance (same
+     * test as the outer-round "improved" check). When the best has
+     * not improved meaningfully for SOLVER_STAGNATION_LIMIT simplex
+     * iterations, the solve is treated as converged — the simplex is
+     * grinding on a flat surface and further rounds will not move it.
+     * This is a global counter (not reset per outer round), so a
+     * problem that improves late still gets its full window.
+     */
+    let lastImprovementIteration = 0;
+    let lastImprovementValue: number | null = null;
 
     const isBetter = (a: number, b: number): boolean =>
         options.goal === 'max' ? a > b : a < b;
@@ -164,6 +181,17 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             if (violation <= CONFIG.SOLVER_FEASIBILITY_TOLERANCE) {
                 if (bestFeasible === null || isBetter(objective, bestFeasible.objective)) {
                     bestFeasible = candidate;
+                    // Reset the stagnation clock only on a meaningful
+                    // improvement; micro-improvements below the
+                    // tolerance do not count as progress.
+                    if (
+                        lastImprovementValue === null ||
+                        Math.abs(objective - lastImprovementValue) >
+                            tolerance * (1 + Math.abs(objective))
+                    ) {
+                        lastImprovementValue = objective;
+                        lastImprovementIteration = iterations;
+                    }
                 }
             } else if (
                 bestInfeasible === null ||
@@ -518,6 +546,17 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
         sortSimplex();
         if (converged() && (await advanceOuterRound())) {
             return true;
+        }
+        if (
+            bestFeasible !== null &&
+            iterations - lastImprovementIteration >= stagnationLimit
+        ) {
+            // The best feasible point has not improved meaningfully
+            // for a long run: the simplex is grinding on a flat
+            // surface. Treat the solve as converged rather than
+            // burning the remaining iteration budget.
+            startPolish('optimal');
+            return finished;
         }
         return finished;
     };

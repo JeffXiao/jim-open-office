@@ -320,4 +320,46 @@ describe('createSolver', () => {
             expect(weight).toBeCloseTo(1 / 3, 2);
         }
     });
+
+    it('stops a flat problem early via the stagnation limit, keeping the answer', async () => {
+        // 19-variable shallow quadratic: the total improvement
+        // available (19e-8) is below the convergence tolerance, so no
+        // improvement is ever "meaningful" and the stagnation clock
+        // never resets. Without the stop the run grinds to natural
+        // convergence (6818 iterations); with a small limit it ends at
+        // the limit with the best essentially at the true minimum (0).
+        // Regression: a flat 19-variable portfolio problem found its
+        // best at step 60 and then ground 9940 iterations without
+        // improving it; the stop ends that run at ~5060 iterations
+        // with the identical answer.
+        const n = 19;
+        const objective = (x: number[]): number =>
+            1e-8 * x.reduce((a, v) => a + (v - 1) ** 2, 0);
+        const run = async (stagnationLimit: number) => {
+            const solver = await createSolver({
+                goal: 'min',
+                initial: Array.from({ length: n }, () => 0),
+                lowerBounds: Array.from({ length: n }, () => null),
+                upperBounds: Array.from({ length: n }, () => null),
+                evaluate: (x: number[]): SolverEvaluation => ({
+                    objective: objective(x),
+                    violations: [],
+                }),
+                stagnationLimit,
+            });
+            await runToCompletion(solver);
+            return solver.getState();
+        };
+        const limited = await run(100);
+        expect(limited.status).toBe('optimal');
+        expect(limited.iterations).toBeLessThanOrEqual(150);
+        expect(limited.bestObjective ?? Number.NaN).toBeLessThan(1e-6);
+        const full = await run(100000);
+        expect(full.status).toBe('optimal');
+        expect(full.iterations).toBeGreaterThan(1000);
+        expect(limited.bestObjective ?? Number.NaN).toBeCloseTo(
+            full.bestObjective ?? Number.NaN,
+            6,
+        );
+    });
 });

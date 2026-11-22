@@ -34,6 +34,8 @@ import { createShell } from './ui';
 import type { Shell, SolverConstraintInput, SolverFormValues } from './ui';
 import { createSolver } from './solver/engine';
 import type { Solver, SolverEvaluation } from './solver/engine';
+import { isEssentiallyOptimal } from './solver/results';
+import type { SolverGoal } from './solver/results';
 import { SolverModel, parseCellAddress, parseConstraint, parseRange, rangeSize } from './solver/model';
 import type { CellRef, OriginalCell, RangeRef, SolverConstraint } from './solver/model';
 
@@ -56,6 +58,8 @@ type SolverRun = {
     changing: RangeRef;
     originals: OriginalCell[][];
     objectiveBefore: number | null;
+    goal: SolverGoal;
+    target: number | null;
     finished: boolean;
     restored: boolean;
     timer: number | undefined;
@@ -472,6 +476,8 @@ export class App {
             changing,
             originals,
             objectiveBefore,
+            goal: values.goal,
+            target,
             finished: false,
             restored: false,
             timer: undefined,
@@ -568,6 +574,15 @@ export class App {
             cancelled: 'Cancelled',
         };
         const statusLabel = statusLabels[state.status] ?? state.status;
+        // A kept solution that barely improved the objective means the
+        // start was already (near-)optimal — say so in the results view.
+        // Only a converged solve can show it: a run that stopped at the
+        // iteration limit may still have been climbing, so a small
+        // improvement there says nothing about the start. Restored runs
+        // (infeasible, unbounded, cancelled) never show it.
+        const alreadyOptimal =
+            state.status === 'optimal' &&
+            isEssentiallyOptimal(run.goal, run.objectiveBefore, objectiveAfter, run.target);
         this.#shell?.showSolverResults({
             status: statusLabel,
             message,
@@ -575,6 +590,7 @@ export class App {
             objectiveAfter: formatSolverNumber(objectiveAfter),
             iterations: state.iterations,
             evaluations: state.evaluations,
+            alreadyOptimal,
         });
         if (state.status === 'infeasible') {
             this.setStatus(CONFIG.STATUS_SOLVER_INFEASIBLE);

@@ -396,6 +396,12 @@
         font-size: 0.9rem;
     }
 
+    #solver-optimal-note {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        margin-block: var(--space-sm) 0;
+    }
+
     #solver-results h3 {
         margin-block-start: var(--space-md);
         font-size: 1rem;

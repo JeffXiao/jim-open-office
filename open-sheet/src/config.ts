@@ -22,6 +22,18 @@ export const CONFIG = Object.freeze({
     /** Solver (Nelder-Mead + quadratic penalty) tuning. */
     SOLVER_MAX_ITERATIONS: 10000,
     SOLVER_TOLERANCE: 1e-6,
+    /**
+     * Stagnation stop: simplex iterations without a meaningful
+     * improvement to the best feasible point before the solve is
+     * treated as converged. On a flat 19-variable portfolio problem
+     * the best is found early (step ~60) and the simplex then grinds
+     * ~9940 iterations without improving it; the stop ends that run
+     * at ~5060 iterations with the same answer. The limit must exceed
+     * the longest improvement gap in the test problems (3528 steps on
+     * the 19-variable ratio problem, which improves late), so it is
+     * set well above that gap and well below the observed grind.
+     */
+    SOLVER_STAGNATION_LIMIT: 5000,
     SOLVER_FEASIBILITY_TOLERANCE: 1e-6,
     SOLVER_INITIAL_PENALTY: 1,
     SOLVER_PENALTY_GROWTH: 10,

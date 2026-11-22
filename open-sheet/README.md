@@ -158,7 +158,9 @@ is correct when the objective is a formula built on other formulas
 precedents, so the solver saw a constant objective and never changed
 the cells). Results show the objective before/after, iterations, and
 status; Keep Solution leaves the new values, Restore Original Values
-puts the pre-solve values back. Two caveats: edits to the changing or
+puts the pre-solve values back. When the objective barely improved,
+the results also note that the starting values were already
+(near-)optimal. Two caveats: edits to the changing or
 objective cells during an active solve may be overwritten by the next
 trial write, and Reset or Open during a solve cancels it first. v1
 limits: one contiguous changing range, GRG-style only, no integer

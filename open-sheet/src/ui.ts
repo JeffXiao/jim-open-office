@@ -71,6 +71,8 @@ export type SolverResultView = {
     objectiveAfter: string;
     iterations: number;
     evaluations: number;
+    /** The objective barely improved: the start was already (near-)optimal. */
+    alreadyOptimal: boolean;
 };
 
 export type Shell = {
@@ -222,6 +224,7 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
     const solverCloseButton = document.querySelector<HTMLButtonElement>('#solver-close');
     const solverResults = document.querySelector<HTMLElement>('#solver-results');
     const solverResultsList = document.querySelector<HTMLElement>('#solver-results-list');
+    const solverOptimalNote = document.querySelector<HTMLElement>('#solver-optimal-note');
     const solverKeepButton = document.querySelector<HTMLButtonElement>('#solver-keep');
     const solverRestoreButton = document.querySelector<HTMLButtonElement>('#solver-restore');
     if (
@@ -258,6 +261,7 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
         solverCloseButton === null ||
         solverResults === null ||
         solverResultsList === null ||
+        solverOptimalNote === null ||
         solverKeepButton === null ||
         solverRestoreButton === null
     ) {
@@ -357,10 +361,16 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
         solverCancelRunButton.classList.toggle('hidden', !solving);
     }
 
+/** Results-view note shown when the start was already (near-)optimal. */
+const SOLVER_ALREADY_OPTIMAL_NOTE =
+    'Your current values are already (near-)optimal — the solution is essentially your starting values.';
+
     /** Swap the dialog between its parameter form and its results view. */
     const showSolverForm = (): void => {
         solverForm.classList.remove('hidden');
         solverResults.classList.add('hidden');
+        solverOptimalNote.textContent = '';
+        solverOptimalNote.classList.add('hidden');
     }
 
     const showSolverResultsView = (result: SolverResultView): void => {
@@ -383,6 +393,8 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
             dd.textContent = value;
             solverResultsList.append(dt, dd);
         }
+        solverOptimalNote.textContent = result.alreadyOptimal ? SOLVER_ALREADY_OPTIMAL_NOTE : '';
+        solverOptimalNote.classList.toggle('hidden', !result.alreadyOptimal);
         solverResults.classList.remove('hidden');
         solverKeepButton.focus();
     }
