@@ -78,7 +78,7 @@ Univer, not by our code.
 | `src/importer.ts` | Local .xlsx/.xls file → snapshot (the exporter's mirror). |
 | `src/ui.ts` | Toolbar, status live region, reset, open, and Solver dialogs. |
 | `src/style.css` | Shell stylesheet (cascade layers, design tokens). |
-| `src/solver/engine.ts` | Pure optimizer (Nelder-Mead + penalty): no Univer dependency. |
+| `src/solver/engine.ts` | Pure optimizer (gradient L-BFGS + penalty, Nelder-Mead fallback): no Univer dependency. |
 | `src/solver/model.ts` | Sheet bridge: address parsing, trial writes, formula evaluation. |
 
 ## Test hook
@@ -147,18 +147,23 @@ the run and restores the original values. Opening an .xlsx that carries
 a saved Excel Solver model (the `solver_*` defined names) prefills the
 dialog with that model — objective, goal, changing cells, constraints,
 non-negative, and method; a file without one leaves the dialog as it was.
-The engine is a pure Nelder-Mead simplex with a quadratic penalty for
-constraints, plus a sum-preserving transfer polish for boundary optima;
-it runs stepwise so the UI stays responsive, with progress in the status
+The engine is a gradient-based optimizer (L-BFGS, the GRG path) with a
+quadratic penalty for constraints, plus a sum-preserving transfer polish
+for boundary optima; Nelder-Mead remains as a fallback path. The gradient
+is numerical (central differences of the penalized objective, every probe
+projected first), so it works for any objective formula, and it converges
+in a handful of iterations where the simplex needed ~10,000 evaluations
+in 19 variables. The engine runs stepwise so the UI stays responsive, with progress in the status
 line and a Cancel button. Before any trial is written to the sheet it is
 projected onto the feasible set the constraints describe — per-cell
 bounds are clamped and a total (a `SUM` of the changing cells) is scaled
 back to its cap — so the sheet never shows a trial breaking a rule the
 projection can express (a total over 100%, a negative weight, a weight
 over its cap). A constraint whose left side is a formula the projection
-cannot read (for example a volatility cell) still relies on the penalty:
-the final answer respects it, but a trial mid-solve may show it over its
-limit. The sheet bridge writes each trial vector with
+cannot read (for example a volatility cell) still relies on the penalty,
+but the line search caps each trial to a 0.15 change per variable and
+never accepts a step that makes feasibility worse, so such a constraint
+stays near its limit mid-solve; the final answer respects it. The sheet bridge writes each trial vector with
 one `setValues` call and waits for the sheet recalculation to settle
 before reading the objective and constraint sides — the only read that
 is correct when the objective is a formula built on other formulas
@@ -172,10 +177,13 @@ the results also note that the starting values were already
 objective cells during an active solve may be overwritten by the next
 trial write, and Reset or Open during a solve cancels it first. v1
 limits: one contiguous changing range, GRG-style only, no integer
-constraints, and a 19-variable problem takes about six minutes to solve
-(each evaluation waits for the sheet recalculation, ~10ms on a small
-workbook and ~30–50ms on a workbook with a long formula chain, and
-Nelder-Mead needs ~10,000 evaluations in 19 variables).
+constraints, and a 19-variable problem now solves in seconds — 3
+iterations / 120 evaluations on the harness problems (the simplex
+needed ~10,000 iterations / ~18,600 evaluations, about six minutes).
+Each evaluation still waits for the sheet recalculation, ~10ms on a
+small workbook and ~30–50ms on a workbook with a long formula chain,
+so a 19-variable solve on a heavy workbook is on the order of ten
+seconds.
 
 ## Versions (pinned)
 

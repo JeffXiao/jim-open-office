@@ -19,9 +19,56 @@ export const CONFIG = Object.freeze({
     SHEET_NAME: 'Sheet1',
     /** How long to wait after the last edit before autosaving, in ms. */
     AUTOSAVE_DELAY_MS: 800,
-    /** Solver (Nelder-Mead + quadratic penalty) tuning. */
+    /** Solver (gradient L-BFGS + quadratic penalty, Nelder-Mead fallback) tuning. */
     SOLVER_MAX_ITERATIONS: 10000,
     SOLVER_TOLERANCE: 1e-6,
+    /**
+     * Gradient method (the GRG path): central-difference step, as a
+     * fraction of max(|x|, 1) per coordinate — small enough that the
+     * truncation error is negligible, large enough that the sheet's
+     * double-precision values still move measurably over the step.
+     * 1e-6 (not 1e-5): the one-sided differences the projected
+     * gradient needs carry an O(h) error, and that error must stay
+     * below the residual tolerance below.
+     */
+    SOLVER_GRAD_STEP: 1e-6,
+    /**
+     * Gradient-method convergence: the projected gradient is
+     * (near-)stationary when ||x - P(x - g)|| is below this, relative
+     * to 1 + |F| — P is the projector-plus-clamp, so a boundary
+     * optimum counts as stationary even though the raw gradient
+     * points out of the feasible set there. (No projector only: with
+     * a projector the KKT residual below is used instead — the
+     * rescaling projector makes the mapping measure the wrong thing,
+     * see gradientAt.)
+     */
+    SOLVER_GRAD_TOLERANCE: 1e-6,
+    /**
+     * Projected-gradient convergence: the KKT residual (the largest
+     * directional derivative along a feasible direction, plus the
+     * radial one) must be below this, relative to 1 + |F|. Looser
+     * than the mapping tolerance because the one-sided differences
+     * behind it carry an O(h) error (~2e-6 at the step above).
+     */
+    SOLVER_GRAD_RESIDUAL_TOLERANCE: 1e-5,
+    /** L-BFGS memory: how many (s, y) curvature pairs are kept. */
+    SOLVER_LBFGS_MEMORY: 5,
+    /** Armijo backtracking line search: halvings, then doublings. */
+    SOLVER_LINE_SEARCH_MAX_TRIALS: 20,
+    SOLVER_LINE_SEARCH_MAX_EXPANSIONS: 10,
+    SOLVER_LINE_SEARCH_C1: 1e-4,
+    /**
+     * Line search: largest change any single variable may make in
+     * one evaluated trial. A huge jump (the gradient norm can be
+     * ~14) clamps to a concentrated allocation whose formula-side
+     * constraint (e.g. volatility) spikes far past its cap in the
+     * sheet while the trial is being evaluated — even though the
+     * trial is rejected and the final answer is feasible. Capping
+     * the displacement keeps every evaluated trial near the current
+     * point; the search still moves up to this far per iteration,
+     * so convergence stays fast.
+     */
+    SOLVER_LINE_SEARCH_MAX_STEP: 0.15,
     /**
      * Stagnation stop: simplex iterations without a meaningful
      * improvement to the best feasible point before the solve is
@@ -47,9 +94,31 @@ export const CONFIG = Object.freeze({
     SOLVER_INITIAL_PENALTY: 1,
     SOLVER_PENALTY_GROWTH: 10,
     SOLVER_MAX_OUTER_ROUNDS: 8,
+    /**
+     * Outer rounds before the "no improvement" polish may end a
+     * solve, when there is no projector. The penalty method needs
+     * several rounds before the feasible optimum can win: while rho
+     * is still small the penalized optimum sits outside the
+     * feasible set, so bestFeasible does not move for a round or
+     * two — that is normal progress, not convergence, and polishing
+     * then would end the solve before the penalty has pulled the
+     * search back to feasibility. With a projector every point is
+     * feasible, so this guard does not apply.
+     */
+    SOLVER_MIN_OUTER_ROUNDS_BEFORE_POLISH: 4,
     SOLVER_SETTLE_ATTEMPTS: 10,
     SOLVER_POLISH_MAX_EVALUATIONS: 6000,
     SOLVER_POLISH_PAIRS_PER_STEP: 10,
+    /**
+     * Transfer polish: stop refining once the transfer step falls
+     * below this. A transfer of this size moves the objective by
+     * ~1e-4 at most (the directional derivatives near an optimum
+     * are < 1), and leaves the weights within ~1e-3 of the optimum
+     * — inside the answer tolerance — while refining to the 1e-6
+     * solver tolerance would cost ~10 extra full sweeps after the
+     * optimum is already found, for nothing.
+     */
+    SOLVER_POLISH_STEP_FLOOR: 2.5e-4,
     SOLVER_STEP_FRACTION: 0.1,
     SOLVER_STEP_FALLBACK: 0.1,
     SOLVER_STEPS_PER_SLICE: 10,
