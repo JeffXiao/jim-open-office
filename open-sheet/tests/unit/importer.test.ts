@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as XLSX from 'xlsx';
-import { readXlsxFile, xlsxWorkbookToSnapshot } from '../../src/importer';
+import { extractSolverParams, readXlsxFile, xlsxWorkbookToSnapshot } from '../../src/importer';
 import { snapshotToXlsxWorkbook } from '../../src/exporter';
 import { buildBlankWorkbookSnapshot } from '../../src/blank-workbook';
 import { CONFIG } from '../../src/config';
@@ -173,14 +173,177 @@ describe('readXlsxFile', () => {
         const file = new File([bytes], 'quarterly.xlsx', {
             type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         });
-        const snapshot = await readXlsxFile(file);
+        const { snapshot, solverParams } = await readXlsxFile(file);
         expect(snapshot.name).toBe('quarterly');
         expect(cellAt(snapshot, 0, 0, 0)).toMatchObject({ v: 1 });
         expect(cellAt(snapshot, 0, 0, 1)).toMatchObject({ v: 2 });
+        expect(solverParams).toBeNull();
     });
 
     it('rejects a file that is not a spreadsheet', async () => {
         const file = new File([new Uint8Array([1, 2, 3, 4, 5])], 'bad.xlsx');
         await expect(readXlsxFile(file)).rejects.toThrow();
+    });
+
+    it('returns the saved Solver model when the file carries one', async () => {
+        const workbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[0, 0]]) });
+        setSolverNames(workbook, SOLVER_NAMES);
+        const bytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+        const file = new File([bytes], 'model.xlsx', {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const { solverParams } = await readXlsxFile(file);
+        expect(solverParams).toMatchObject({
+            objective: 'BM60',
+            goal: 'max',
+            changing: 'BM31:BM49',
+            nonNegative: true,
+            method: 'grg',
+        });
+        expect(solverParams?.constraints).toHaveLength(3);
+    });
+});
+
+/** Attach defined names to a workbook, the way Excel stores a Solver model. */
+function setSolverNames(
+    workbook: XLSX.WorkBook,
+    names: { Name: string; Ref: string }[],
+): void {
+    workbook.Workbook = { ...(workbook.Workbook ?? {}), Names: names };
+}
+
+/**
+ * A synthetic Solver model in the same shape as a real portfolio file
+ * (objective BM60, changing BM31:BM49, three constraints) — built from
+ * scratch, not copied from any real file.
+ */
+const SOLVER_NAMES = [
+    { Name: 'solver_opt', Ref: 'Sheet1!$BM$60' },
+    { Name: 'solver_adj', Ref: 'Sheet1!$BM$31:$BM$49' },
+    { Name: 'solver_typ', Ref: '1' },
+    { Name: 'solver_val', Ref: '0' },
+    { Name: 'solver_num', Ref: '3' },
+    { Name: 'solver_lhs1', Ref: 'Sheet1!$BM$31:$BM$49' },
+    { Name: 'solver_rel1', Ref: '3' },
+    { Name: 'solver_rhs1', Ref: '0' },
+    { Name: 'solver_lhs2', Ref: 'Sheet1!$BM$50' },
+    { Name: 'solver_rel2', Ref: '1' },
+    { Name: 'solver_rhs2', Ref: '1' },
+    { Name: 'solver_lhs3', Ref: 'Sheet1!$BM$56' },
+    { Name: 'solver_rel3', Ref: '1' },
+    { Name: 'solver_rhs3', Ref: '0.2' },
+    { Name: 'solver_neg', Ref: '1' },
+    { Name: 'solver_eng', Ref: '1' },
+];
+
+describe('extractSolverParams', () => {
+    it('extracts a full Solver model', () => {
+        const workbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[0]]) });
+        setSolverNames(workbook, SOLVER_NAMES);
+        expect(extractSolverParams(workbook)).toEqual({
+            objective: 'BM60',
+            goal: 'max',
+            targetValue: '',
+            changing: 'BM31:BM49',
+            nonNegative: true,
+            method: 'grg',
+            constraints: [
+                { left: 'BM31:BM49', operator: '>=', right: '0' },
+                { left: 'BM50', operator: '<=', right: '1' },
+                { left: 'BM56', operator: '<=', right: '0.2' },
+            ],
+        });
+    });
+
+    it('returns null when the workbook has no Solver names', () => {
+        const workbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        expect(extractSolverParams(workbook)).toBeNull();
+    });
+
+    it('returns null when the objective or the changing range is missing', () => {
+        const noObjective = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        setSolverNames(noObjective, SOLVER_NAMES.filter((n) => n.Name !== 'solver_opt'));
+        expect(extractSolverParams(noObjective)).toBeNull();
+        const noChanging = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        setSolverNames(noChanging, SOLVER_NAMES.filter((n) => n.Name !== 'solver_adj'));
+        expect(extractSolverParams(noChanging)).toBeNull();
+    });
+
+    it('reads Value Of with its target, Min, non-negative off, and Simplex', () => {
+        const workbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        setSolverNames(workbook, [
+            { Name: 'solver_opt', Ref: 'Sheet1!$B$1' },
+            { Name: 'solver_adj', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_typ', Ref: '3' },
+            { Name: 'solver_val', Ref: '2.5' },
+            { Name: 'solver_num', Ref: '0' },
+            { Name: 'solver_neg', Ref: '0' },
+            { Name: 'solver_eng', Ref: '2' },
+        ]);
+        expect(extractSolverParams(workbook)).toEqual({
+            objective: 'B1',
+            goal: 'value',
+            targetValue: '2.5',
+            changing: 'A1:A2',
+            nonNegative: false,
+            method: 'simplex',
+            constraints: [],
+        });
+        const minWorkbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        setSolverNames(minWorkbook, [
+            { Name: 'solver_opt', Ref: 'Sheet1!$B$1' },
+            { Name: 'solver_adj', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_typ', Ref: '2' },
+        ]);
+        expect(extractSolverParams(minWorkbook)).toMatchObject({
+            goal: 'min',
+            targetValue: '',
+            nonNegative: true,
+            method: 'grg',
+        });
+    });
+
+    it('keeps a cell right side as a cell, and skips an unparseable constraint', () => {
+        const workbook = makeWorkbook({ Sheet1: XLSX.utils.aoa_to_sheet([[1]]) });
+        setSolverNames(workbook, [
+            { Name: 'solver_opt', Ref: 'Sheet1!$B$1' },
+            { Name: 'solver_adj', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_typ', Ref: '1' },
+            { Name: 'solver_num', Ref: '3' },
+            { Name: 'solver_lhs1', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_rel1', Ref: '3' },
+            { Name: 'solver_rhs1', Ref: '0' },
+            // Unknown relation code (9): skipped, the others still import.
+            { Name: 'solver_lhs2', Ref: 'Sheet1!$C$1' },
+            { Name: 'solver_rel2', Ref: '9' },
+            { Name: 'solver_rhs2', Ref: '1' },
+            { Name: 'solver_lhs3', Ref: 'Sheet1!$C$1' },
+            { Name: 'solver_rel3', Ref: '1' },
+            { Name: 'solver_rhs3', Ref: 'Sheet1!$D$1' },
+        ]);
+        expect(extractSolverParams(workbook)).toEqual({
+            objective: 'B1',
+            goal: 'max',
+            targetValue: '',
+            changing: 'A1:A2',
+            nonNegative: true,
+            method: 'grg',
+            constraints: [
+                { left: 'A1:A2', operator: '>=', right: '0' },
+                { left: 'C1', operator: '<=', right: 'D1' },
+            ],
+        });
+    });
+
+    it('ignores a model saved on another sheet', () => {
+        const workbook = makeWorkbook({
+            Sheet1: XLSX.utils.aoa_to_sheet([[1]]),
+            Sheet2: XLSX.utils.aoa_to_sheet([[2]]),
+        });
+        setSolverNames(workbook, [
+            { Name: 'solver_opt', Ref: 'Sheet2!$B$1' },
+            { Name: 'solver_adj', Ref: 'Sheet2!$A$1:$A$2' },
+        ]);
+        expect(extractSolverParams(workbook)).toBeNull();
     });
 });

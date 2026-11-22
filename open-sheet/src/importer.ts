@@ -18,6 +18,23 @@ import { LocaleType } from '@univerjs/core';
 import * as XLSX from 'xlsx';
 import { CONFIG } from './config';
 import { buildBlankWorkbookSnapshot } from './blank-workbook';
+import {
+    indexToColumnLetters,
+    parseCellAddress,
+    parseConstraint,
+    parseRange,
+} from './solver/model';
+
+/** What the Solver dialog needs, as imported from a saved Solver model. */
+export type ImportedSolverParams = {
+    objective: string;
+    goal: 'max' | 'min' | 'value';
+    targetValue: string;
+    changing: string;
+    nonNegative: boolean;
+    method: string;
+    constraints: { left: string; operator: string; right: string }[];
+};
 
 /** Grid size of a fresh blank workbook; grown when the file reaches further. */
 const DEFAULT_ROW_COUNT = 100;
@@ -156,6 +173,138 @@ function stripExtension(fileName: string): string {
     return dot > 0 ? fileName.slice(0, dot) : fileName;
 }
 
+/**
+ * Excel stores a saved Solver model as defined names (solver_opt,
+ * solver_adj, solver_typ, solver_val, solver_num, solver_lhsN,
+ * solver_relN, solver_rhsN, solver_neg, solver_eng) in the workbook.
+ * solver_rel codes are 1 = <=, 2 = =, 3 = >=; solver_typ is 1 = Max,
+ * 2 = Min, 3 = Value Of; solver_eng is 1 = GRG Nonlinear, 2 = Simplex LP,
+ * 3 = Evolutionary; solver_neg is 1 = non-negative on. The refs carry the
+ * sheet name (Sheet1!$BM$60) and the constants are bare numbers ("1").
+ * Returns null when the workbook has no usable Solver model — the dialog
+ * then keeps its defaults. A model is only imported when its refs point
+ * at the first sheet, which is the one the app opens active; the Solver
+ * always runs on the active sheet.
+ */
+export function extractSolverParams(workbook: XLSX.WorkBook): ImportedSolverParams | null {
+    const names = workbook.Workbook?.Names;
+    if (names === undefined || names.length === 0) {
+        return null;
+    }
+    const byName = new Map<string, string>();
+    for (const entry of names) {
+        if (typeof entry.Name === 'string' && typeof entry.Ref === 'string') {
+            byName.set(entry.Name.toLowerCase(), entry.Ref);
+        }
+    }
+    const firstSheet = workbook.SheetNames[0] ?? '';
+
+    /** The sheet a ref points at (null when the ref has no sheet prefix). */
+    const sheetOf = (ref: string): string | null => {
+        const bang = ref.lastIndexOf('!');
+        if (bang < 0) {
+            return null;
+        }
+        let sheet = ref.slice(0, bang);
+        if (sheet.startsWith("'") && sheet.endsWith("'")) {
+            sheet = sheet.slice(1, -1).replace(/''/g, "'");
+        }
+        return sheet;
+    };
+    /** A ref usable for this workbook: on the first sheet, or sheet-less. */
+    const onFirstSheet = (ref: string): boolean => {
+        const sheet = sheetOf(ref);
+        return sheet === null || sheet === firstSheet;
+    };
+    /** Drop the sheet prefix (up to the last '!') and any $ markers. */
+    const bareAddress = (ref: string): string => {
+        const bang = ref.lastIndexOf('!');
+        return (bang < 0 ? ref : ref.slice(bang + 1)).replace(/\$/g, '');
+    };
+    /** A ref as a cell address, normalized (BM60), or null. */
+    const refToCell = (ref: string | undefined): string | null => {
+        if (ref === undefined || !onFirstSheet(ref)) {
+            return null;
+        }
+        const cell = parseCellAddress(bareAddress(ref));
+        return cell === null
+            ? null
+            : `${indexToColumnLetters(cell.col)}${cell.row + 1}`;
+    };
+    /** A ref as a range, normalized (BM31:BM49, or BM50 alone), or null. */
+    const refToRange = (ref: string | undefined): string | null => {
+        if (ref === undefined || !onFirstSheet(ref)) {
+            return null;
+        }
+        const range = parseRange(bareAddress(ref));
+        if (range === null) {
+            return null;
+        }
+        const start = `${indexToColumnLetters(range.start.col)}${range.start.row + 1}`;
+        const end = `${indexToColumnLetters(range.end.col)}${range.end.row + 1}`;
+        return start === end ? start : `${start}:${end}`;
+    };
+    /** A ref that is a plain number (solver_typ, solver_val, ...), or null. */
+    const refToNumber = (ref: string | undefined): number | null => {
+        if (ref === undefined) {
+            return null;
+        }
+        const value = Number(ref);
+        return Number.isFinite(value) ? value : null;
+    };
+
+    const objective = refToCell(byName.get('solver_opt'));
+    const changing = refToRange(byName.get('solver_adj'));
+    if (objective === null || changing === null) {
+        return null;
+    }
+    const goalCode = refToNumber(byName.get('solver_typ'));
+    const goal: ImportedSolverParams['goal'] =
+        goalCode === 2 ? 'min' : goalCode === 3 ? 'value' : 'max';
+    const targetValue =
+        goal === 'value'
+            ? (() => {
+                  const value = refToNumber(byName.get('solver_val'));
+                  return value === null ? '' : String(value);
+              })()
+            : '';
+    const constraints: ImportedSolverParams['constraints'] = [];
+    const count = refToNumber(byName.get('solver_num'));
+    const relOperators: Record<number, string> = { 1: '<=', 2: '=', 3: '>=' };
+    if (count !== null) {
+        for (let index = 1; index <= count; index++) {
+            const left = refToRange(byName.get(`solver_lhs${index}`));
+            const rel = refToNumber(byName.get(`solver_rel${index}`));
+            const operator = rel === null ? undefined : relOperators[rel];
+            if (left === null || operator === undefined) {
+                continue;
+            }
+            const rhsRef = byName.get(`solver_rhs${index}`);
+            let right: string | null = null;
+            const rhsNumber = refToNumber(rhsRef);
+            if (rhsNumber !== null) {
+                right = String(rhsNumber);
+            } else {
+                right = refToRange(rhsRef);
+            }
+            if (right === null) {
+                continue;
+            }
+            // Skip anything the dialog could not solve with (a range right
+            // side, an unknown operator, or a bad address).
+            if (parseConstraint(left, operator, right) === null) {
+                continue;
+            }
+            constraints.push({ left, operator, right });
+        }
+    }
+    const neg = refToNumber(byName.get('solver_neg'));
+    const nonNegative = neg === null ? true : neg !== 0;
+    const eng = refToNumber(byName.get('solver_eng'));
+    const method = eng === 2 ? 'simplex' : eng === 3 ? 'evolutionary' : 'grg';
+    return { objective, goal, targetValue, changing, nonNegative, method, constraints };
+}
+
 /** Magic bytes of the two formats SheetJS can read: ZIP (.xlsx) and OLE2 (.xls). */
 const XLSX_MAGIC = [0x50, 0x4b];
 const XLS_MAGIC = [0xd0, 0xcf, 0x11, 0xe0];
@@ -166,12 +315,16 @@ function hasMagic(bytes: Uint8Array, magic: number[]): boolean {
 }
 
 /**
- * Read a local .xlsx/.xls file into a Univer snapshot (browser only).
- * SheetJS silently "parses" non-spreadsheet bytes as a one-cell sheet, so
- * the format is checked first: a real file starts with the ZIP or OLE2
- * magic and contains at least one sheet.
+ * Read a local .xlsx/.xls file into a Univer snapshot (browser only),
+ * plus the saved Solver model when the file has one. SheetJS silently
+ * "parses" non-spreadsheet bytes as a one-cell sheet, so the format is
+ * checked first: a real file starts with the ZIP or OLE2 magic and
+ * contains at least one sheet.
  */
-export async function readXlsxFile(file: File): Promise<IWorkbookData> {
+export async function readXlsxFile(file: File): Promise<{
+    snapshot: IWorkbookData;
+    solverParams: ImportedSolverParams | null;
+}> {
     const data = await file.arrayBuffer();
     const bytes = new Uint8Array(data);
     if (!hasMagic(bytes, XLSX_MAGIC) && !hasMagic(bytes, XLS_MAGIC)) {
@@ -181,5 +334,8 @@ export async function readXlsxFile(file: File): Promise<IWorkbookData> {
     if (workbook.SheetNames.length === 0) {
         throw new Error(`"${file.name}" contains no sheets.`);
     }
-    return xlsxWorkbookToSnapshot(workbook, stripExtension(file.name));
+    return {
+        snapshot: xlsxWorkbookToSnapshot(workbook, stripExtension(file.name)),
+        solverParams: extractSolverParams(workbook),
+    };
 }

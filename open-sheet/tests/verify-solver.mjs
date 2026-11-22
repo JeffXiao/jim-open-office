@@ -11,14 +11,21 @@
  * (0.5, 0.5), objective 0.5. Problem 2: the 19-variable ratio problem
  * (identical assets, weights >= 0, sum <= 1, each <= 0.2) — known optimum
  * equal weights 1/19, objective 0.3*sqrt(19) = 1.3077. Also checks that
- * Cancel restores the original values, that the dialog reopens prefilled
- * with the last-used parameters, and that invalid input shows an error.
+ * the dialog is modeless (the sheet is clickable and editable while it
+ * is open, before solving and on the results view; its inputs are
+ * enabled when it reopens after a solve), that Keep leaves the solution
+ * in the cells, that Restore reverts to the originals, that Esc after a
+ * solve keeps the solution, that Cancel restores the original values,
+ * that the dialog reopens prefilled with the last-used parameters, that
+ * invalid input shows an error, and that opening a file with a saved
+ * Solver model prefills the dialog from it.
  */
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import * as XLSX from 'xlsx';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT = path.resolve(DIR, '..');
@@ -80,9 +87,11 @@ function serve() {
 
 const server = await serve();
 let browser = null;
+/** Synthetic .xlsx with a saved Solver model, written for the import check. */
+const fixturePath = path.join(DIR, 'solver-model-fixture.xlsx');
 try {
     browser = await chromium.launch();
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const errors = [];
     page.on('pageerror', (error) => errors.push(String(error)));
     page.on('requestfailed', (request) => {
@@ -127,6 +136,25 @@ try {
         return (await resultsList.textContent()) ?? '';
     }
 
+    /**
+     * Edit a cell by keyboard while the (modeless) dialog is open: click
+     * A1, which sits left of the centred dialog, arrow right to the
+     * target column, type the value, Enter to commit.
+     */
+    async function editCellByKeyboard(columnSteps, value, address, expected) {
+        await page.mouse.click(77, 177);
+        for (let i = 0; i < columnSteps; i++) {
+            await page.keyboard.press('ArrowRight');
+        }
+        await page.keyboard.type(value);
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(
+            ([addr, want]) => window.__aiOffice.inspectCell(addr)?.rawValue === want,
+            [address, expected],
+            { timeout: 5000 },
+        );
+    }
+
     // ---- Problem 1: min x^2+y^2 s.t. x+y>=1, optimum (0.5, 0.5), 0.5. ----
     await setCell('A1', 0);
     await setCell('A2', 0);
@@ -150,6 +178,12 @@ try {
     await page.locator('[data-action="solver"]').click();
     await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
     check('Solver dialog opens', true);
+
+    // (a) Modeless: the sheet is clickable and editable with the dialog open.
+    await editCellByKeyboard(3, '42', 'D1', 42);
+    check('sheet editable while the Solver dialog is open (D1 = 42)', true);
+    check('Solver dialog stays open after editing the sheet', await solverDialog.isVisible());
+
     await fillSolverForm({ objective: 'B1', goal: 'min', changing: 'A1:A2' });
     await addConstraint('C1', '>=', '1');
     const constraintsText = (await page.locator('#solver-constraints').textContent()) ?? '';
@@ -166,9 +200,23 @@ try {
     check('problem 1: B1 = 0.5', typeof b1 === 'number' && Math.abs(b1 - 0.5) < 1e-3, `B1 = ${b1}`);
     check('problem 1 results show the objective before/after', results1.includes('0.5'));
 
+    // (b) Modeless: the results view is showing AND the sheet is still editable.
+    await editCellByKeyboard(3, '99', 'D1', 99);
+    check('sheet editable while the results view is open (D1 = 99)', true);
+    check('results view still showing after editing the sheet', await page.locator('#solver-results').isVisible());
+
     await page.locator('#solver-keep').click();
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
-    check('Keep Solution closes the dialog, values stay', (await inspect('A1'))?.rawValue === a1);
+    const a1Kept = (await inspect('A1'))?.rawValue;
+    const a2Kept = (await inspect('A2'))?.rawValue;
+    check(
+        'Keep Solution leaves the solution in the cells (A1 = A2 = 0.5)',
+        typeof a1Kept === 'number' &&
+            Math.abs(a1Kept - 0.5) < 5e-3 &&
+            typeof a2Kept === 'number' &&
+            Math.abs(a2Kept - 0.5) < 5e-3,
+        `A1 = ${a1Kept}, A2 = ${a2Kept}`,
+    );
 
     // ---- The dialog reopens prefilled with the last-used parameters. ----
     await page.locator('[data-action="solver"]').click();
@@ -178,6 +226,13 @@ try {
         (await page.locator('#solver-objective').inputValue()) === 'B1' &&
             (await page.locator('#solver-changing').inputValue()) === 'A1:A2' &&
             ((await page.locator('#solver-constraints').textContent()) ?? '').includes('C1 >= 1'),
+    );
+    // (c) Reopening after a solve shows enabled inputs (the solving state
+    // is cleared when the run finishes).
+    check(
+        'dialog inputs enabled on reopen after a solve',
+        (await page.locator('#solver-objective').isDisabled()) === false &&
+            (await page.locator('#solver-solve').isDisabled()) === false,
     );
     await page.locator('#solver-close').click();
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
@@ -254,7 +309,10 @@ try {
     await page.locator('[data-action="solver"]').click();
     await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
     await page.locator('#solver-solve').click();
-    const results2 = await waitForResults(180000);
+    // Settle-based evaluation waits for the sheet recalculation on every
+    // trial (~10ms on a small workbook), so the 19-variable solve needs
+    // a long window.
+    const results2 = await waitForResults(600000);
     check('problem 2 reports an optimal solution', results2.includes('Optimal'), results2.slice(0, 120));
     let weightsOk = true;
     let worstDev = 0;
@@ -276,10 +334,62 @@ try {
     );
     check('problem 2 results show the objective before/after', results2.includes('1.2847'));
 
-    await page.locator('#solver-keep').click();
+    // Esc after a solve keeps the solution: dismissing the results view
+    // is the same as Keep Solution, never a silent Restore.
+    await page.keyboard.press('Escape');
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+    let escKept = true;
+    for (let row = 1; row <= 19; row++) {
+        const value = (await inspect(`A${row}`))?.rawValue;
+        if (typeof value !== 'number' || Math.abs(value - 1 / 19) >= 5e-3) {
+            escKept = false;
+            break;
+        }
+    }
+    check('Esc after a solve keeps the solution (all 19 weights = 1/19)', escKept);
     const statusAfterSolve = (await page.locator('#status').textContent()) ?? '';
     check('status reports the finished solve', statusAfterSolve.includes('Solver finished'), statusAfterSolve);
+
+    // ---- Restore Original Values reverts to the pre-solve values. ----
+    // Re-solve problem 1 (fast), then Restore instead of Keep.
+    await setCell('A1', 0);
+    await setCell('A2', 0);
+    // Problem 2 replaced B1/C1 with its own formulas; put problem 1's back.
+    await setCell('B1', '=A1^2+A2^2');
+    await setCell('C1', '=A1+A2');
+    await page.waitForFunction(
+        () => window.__aiOffice.inspectCell('B1')?.rawValue === 0,
+        null,
+        { timeout: 5000 },
+    );
+    await page.waitForFunction(
+        () => window.__aiOffice.inspectCell('C1')?.rawValue === 0,
+        null,
+        { timeout: 5000 },
+    );
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await fillSolverForm({ objective: 'B1', goal: 'min', changing: 'A1:A2' });
+    // Replace problem 2's three constraints with problem 1's one.
+    for (let i = 0; i < 3; i++) {
+        await page.locator('#solver-constraints li').first().click();
+        await page.locator('#solver-delete-constraint').click();
+    }
+    await addConstraint('C1', '>=', '1');
+    await page.locator('#solver-solve').click();
+    const results3 = await waitForResults(60000);
+    check('problem 1 re-solve reports an optimal solution', results3.includes('Optimal'), results3.slice(0, 120));
+    await page.locator('#solver-restore').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+    const a1Restored = (await inspect('A1'))?.rawValue;
+    const a2Restored = (await inspect('A2'))?.rawValue;
+    check(
+        'Restore Original Values reverts the cells (A1 = A2 = 0)',
+        a1Restored === 0 && a2Restored === 0,
+        `A1 = ${a1Restored}, A2 = ${a2Restored}`,
+    );
+    const statusAfterRestore = (await page.locator('#status').textContent()) ?? '';
+    check('status reports the restore', statusAfterRestore.includes('restored'), statusAfterRestore);
 
     // ---- Invalid input shows an error instead of solving. ----
     await page.locator('[data-action="solver"]').click();
@@ -292,11 +402,65 @@ try {
     await page.locator('#solver-close').click();
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
 
+    // ---- Opening a file with a saved Solver model prefills the dialog. ----
+    // Synthetic fixture (same shape as problem 1, built from scratch).
+    const fixture = XLSX.utils.book_new();
+    const fixtureSheet = XLSX.utils.aoa_to_sheet([[0], [0]]);
+    fixtureSheet['B1'] = { t: 'n', f: 'A1^2+A2^2', v: 0 };
+    fixtureSheet['C1'] = { t: 'n', f: 'A1+A2', v: 0 };
+    XLSX.utils.book_append_sheet(fixture, fixtureSheet, 'Sheet1');
+    fixture.Workbook = {
+        Names: [
+            { Name: 'solver_opt', Ref: 'Sheet1!$B$1' },
+            { Name: 'solver_adj', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_typ', Ref: '2' },
+            { Name: 'solver_val', Ref: '0' },
+            { Name: 'solver_num', Ref: '1' },
+            { Name: 'solver_lhs1', Ref: 'Sheet1!$A$1:$A$2' },
+            { Name: 'solver_rel1', Ref: '3' },
+            { Name: 'solver_rhs1', Ref: '0' },
+            { Name: 'solver_neg', Ref: '1' },
+            { Name: 'solver_eng', Ref: '1' },
+        ],
+    };
+    XLSX.writeFile(fixture, fixturePath);
+    await page.locator('[data-action="open"]').click();
+    await page.locator('#open-file-input').setInputFiles(fixturePath);
+    await page.locator('#open-dialog').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#open-dialog button[value="confirm"]').click();
+    await page.waitForFunction(
+        () => document.querySelector('#status')?.textContent === 'Opened solver-model-fixture.xlsx.',
+        null,
+        { timeout: 15000 },
+    );
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    check(
+        'imported Solver model prefills the dialog (objective, goal, changing)',
+        (await page.locator('#solver-objective').inputValue()) === 'B1' &&
+            (await page.locator('input[name="solver-goal"][value="min"]').isChecked()) &&
+            (await page.locator('#solver-changing').inputValue()) === 'A1:A2',
+    );
+    const importedConstraints = (await page.locator('#solver-constraints').textContent()) ?? '';
+    check(
+        'imported Solver model prefills the constraint',
+        importedConstraints.includes('A1:A2 >= 0'),
+        importedConstraints.trim(),
+    );
+    check(
+        'imported Solver model prefills non-negative and method',
+        (await page.locator('#solver-nonnegative').isChecked()) &&
+            (await page.locator('#solver-method').inputValue()) === 'grg',
+    );
+    await page.locator('#solver-close').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+
     check('no page errors or failed requests', errors.length === 0, errors.join('; '));
 } finally {
     await browser?.close();
     server.close();
     fs.rmSync(DIST, { recursive: true, force: true });
+    fs.rmSync(fixturePath, { force: true });
 }
 
 const failed = checks.filter((c) => !c.ok);

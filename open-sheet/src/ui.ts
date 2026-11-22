@@ -391,7 +391,10 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
     installFocusgroupFallback(toolbar);
     installLightDismissFallback(dialog);
     installLightDismissFallback(openDialog);
-    installLightDismissFallback(solverDialog);
+    // The Solver dialog is modeless (show, not showModal) so the sheet
+    // stays interactive while it is open; it has closedby="closerequest",
+    // so Esc closes it and a click outside does not dismiss it. No light
+    // dismiss fallback: an outside click must never close it mid-solve.
     fileInput.accept = CONFIG.OPEN_ACCEPT;
 
     // One delegated click listener for the whole toolbar (see the skill:
@@ -591,6 +594,13 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
             return googleSlot;
         },
         openSolverDialog(prefill: SolverFormValues & { constraints: SolverConstraintInput[] }): void {
+            // Modeless: reopening while it is already open just focuses
+            // it — never reset the form mid-solve or discard a finished
+            // result, and never call show() on an open dialog (it throws).
+            if (solverDialog.open) {
+                solverDialog.focus();
+                return;
+            }
             solverObjective.value = prefill.objective;
             solverChanging.value = prefill.changing;
             solverTarget.value = prefill.targetValue;
@@ -613,7 +623,10 @@ export function createShell(spriteUrl: string, actions: ShellActions): Shell {
             showSolverForm();
             syncSolverTarget();
             renderSolverConstraints();
-            solverDialog.showModal();
+            // Modeless (show, not showModal): the sheet stays clickable
+            // and editable while the dialog is open, before solving and
+            // on the results view.
+            solverDialog.show();
         },
         setSolverError(message: string | null): void {
             setSolverErrorText(message);

@@ -4,20 +4,25 @@
  * below reads and writes the live sheet through the Facade API.
  *
  * One evaluation is one sheet round trip: write a trial vector into the
- * changing range with a single setValues call, then read the objective
- * cell and each constraint side. The reads need fresh formula values, but
- * Univer's sheet recalculation is debounced (~10ms) and asynchronous —
- * a read in the same turn as a write still shows the previous value
- * (measured). So formula cells are evaluated directly with the formula
- * engine's batch API (executeFormulas), which computes them against the
- * just-written trial values without waiting for the debounced recalc;
- * plain-value cells are read straight from the sheet (fresh after a
- * write). If the batch evaluation ever fails, the model falls back to
- * waiting for the sheet recalculation to settle.
+ * changing range with a single setValues call, wait for the sheet
+ * recalculation to settle, then read the objective cell and each
+ * constraint side. The reads must wait: Univer's sheet recalculation is
+ * debounced (~10ms) and asynchronous — a read in the same turn as a write
+ * still shows the previous value (measured). An earlier version evaluated
+ * formula cells directly with the formula engine's batch API
+ * (executeFormulas), but that reads STALE values whenever the objective
+ * (or a constraint side) is a formula whose precedents are themselves
+ * formulas: the batch call computes the given formulas against the
+ * cached values of their precedents, and the trial write has not
+ * refreshed those yet. The symptom was a constant objective, so the
+ * solver concluded the start was optimal and never changed the changing
+ * cells (confirmed on a chained formula, D1 = 10-B1 with B1 = A1^2+A2^2,
+ * and on a real portfolio file whose objective is
+ * (return - risk-free) / volatility). Settling first costs ~10ms per
+ * evaluation, but it is the only read that is correct for chained
+ * formulas — which is how real workbooks are built.
  */
 import type { FWorksheet } from '@univerjs/preset-sheets-core';
-import type { FUniver } from '@univerjs/presets';
-import type { IFormulaStringMap } from '@univerjs/engine-formula';
 import { CONFIG } from '../config';
 
 export type CellRef = { row: number; col: number };
@@ -187,20 +192,23 @@ export type ModelEvaluation = {
 
 export class SolverModel {
     #sheet: FWorksheet;
-    #formula: ReturnType<FUniver['getFormula']>;
-    #unitId: string;
-    #sheetId: string;
-    /** Formula strings for the cells this solve reads (cached on first use;
-     * the solve only writes values, never formulas, so they cannot change). */
-    #formulaCache = new Map<string, string | null>();
-    /** True once the batch evaluation has failed — use settle-and-read after. */
-    #batchFailed = false;
+    /**
+     * True once the run was cancelled. An evaluation already in flight
+     * may be between its write and its settle when the user cancels; a
+     * later evaluation in the same engine step must not write a trial
+     * over the restored originals, so evaluate() refuses to write once
+     * this is set (it returns a non-finite objective instead, which the
+     * engine treats as a worthless trial and then discards with the run).
+     */
+    #cancelled = false;
 
-    constructor(sheet: FWorksheet, formula: ReturnType<FUniver['getFormula']>, unitId: string) {
+    constructor(sheet: FWorksheet) {
         this.#sheet = sheet;
-        this.#formula = formula;
-        this.#unitId = unitId;
-        this.#sheetId = sheet.getSheetId();
+    }
+
+    /** Stop any further trial writes (the run was cancelled). */
+    cancel(): void {
+        this.#cancelled = true;
     }
 
     /** Read one cell as a number; null when empty or not a number. */
@@ -274,57 +282,46 @@ export class SolverModel {
 
     /**
      * Wait for the formula engine to recalculate a cell after a write.
-     * Univer recalculates asynchronously: a read in the same turn as a
-     * write still shows the previous value (measured: a fresh value
-     * appears within a macrotask for an established formula, up to ~10ms
-     * for a newly entered one). Yield, then read twice a macrotask
-     * apart; when the two reads agree, the value has settled.
+     * Univer recalculates asynchronously, debounced by ~10ms: two reads
+     * a macrotask apart can both land BEFORE the recalculation fires and
+     * agree on the STALE value (measured: the new value appears 0.3ms
+     * to 13.6ms after a write). So, when the pre-write value is known,
+     * wait until the value moves away from it — that proves the
+     * recalculation ran — and then holds still across two reads. When
+     * the trial leaves the value unchanged, the stale value IS the true
+     * value, so accept it after enough attempts for the recalculation
+     * to have fired (five attempts, ~10+ macrotasks).
      */
-    async settle(ref: CellRef): Promise<void> {
+    async settle(ref: CellRef, previous: number | null = null): Promise<void> {
+        let moved = previous === null;
         for (let attempt = 0; attempt < CONFIG.SOLVER_SETTLE_ATTEMPTS; attempt++) {
             await tick();
             const first = this.readCell(ref);
+            if (!moved && first !== previous) {
+                moved = true;
+            }
             await tick();
             const second = this.readCell(ref);
-            if (first === second) {
+            if (!moved && second !== previous) {
+                moved = true;
+            }
+            if (moved && first === second) {
+                return;
+            }
+            if (!moved && attempt >= 4) {
                 return;
             }
         }
     }
 
-    /** A cell's formula string, or null when it holds a plain value. */
-    private formulaOf(ref: CellRef): string | null {
-        const key = `${ref.row},${ref.col}`;
-        const cached = this.#formulaCache.get(key);
-        if (cached !== undefined) {
-            return cached;
-        }
-        const formula = this.#sheet.getRange(cellAddress(ref)).getFormula();
-        const result = formula === '' ? null : formula;
-        this.#formulaCache.set(key, result);
-        return result;
-    }
-
-    /** The batch-evaluation map for a list of formula cells. */
-    private buildFormulaMap(cells: { ref: CellRef; formula: string }[]): IFormulaStringMap {
-        const rows: Record<number, Record<number, string[]>> = {};
-        for (const { ref, formula } of cells) {
-            (rows[ref.row] ??= {})[ref.col] = [formula];
-        }
-        return { [this.#unitId]: { [this.#sheetId]: rows } };
-    }
-
     /**
-     * Evaluate one trial vector: write it, then read the objective and
-     * every constraint side. A range left side is checked cell-wise, like
-     * Excel ($BM$31:$BM$49 >= 0 means every cell >= 0).
-     *
-     * Formula cells are batch-evaluated against the just-written trial
-     * values (executeFormulas runs the interpreter directly, so it does
-     * not wait for the sheet's debounced recalculation); plain-value
-     * cells are read straight from the sheet, where a write lands
-     * synchronously. If the batch evaluation ever fails, the model falls
-     * back to waiting for the sheet recalculation to settle.
+     * Evaluate one trial vector: write it, wait for the recalculation to
+     * settle, then read the objective and every constraint side. A range
+     * left side is checked cell-wise, like Excel ($BM$31:$BM$49 >= 0 means
+     * every cell >= 0). Settling first is what makes this correct for
+     * chained formulas (see the module comment): the objective and
+     * constraint sides are all recomputed in the same recalculation pass,
+     * so once the objective has settled they have too.
      */
     async evaluate(
         objective: CellRef,
@@ -332,6 +329,14 @@ export class SolverModel {
         trial: number[],
         constraints: SolverConstraint[],
     ): Promise<ModelEvaluation> {
+        // Cancelled mid-step: refuse the write, or the trial would land
+        // over the originals the cancel just restored.
+        if (this.#cancelled) {
+            return { objective: null, violations: constraints.map(() => 0) };
+        }
+        // Read the objective first: settle() waits for it to move away
+        // from this value, which is what proves the recalculation ran.
+        const objectiveBeforeWrite = this.readCell(objective);
         this.writeValues(changing, trial);
         const needed: CellRef[] = [objective];
         for (const constraint of constraints) {
@@ -340,47 +345,11 @@ export class SolverModel {
                 needed.push(constraint.right.ref);
             }
         }
-        const formulaCells: { ref: CellRef; formula: string }[] = [];
-        const plainCells: CellRef[] = [];
-        for (const ref of needed) {
-            const formula = this.formulaOf(ref);
-            if (formula !== null) {
-                formulaCells.push({ ref, formula });
-            } else {
-                plainCells.push(ref);
-            }
-        }
+        await this.settle(objective, objectiveBeforeWrite);
         const values = new Map<string, number | null>();
         const keyOf = (ref: CellRef): string => `${ref.row},${ref.col}`;
-        for (const ref of plainCells) {
+        for (const ref of needed) {
             values.set(keyOf(ref), this.readCell(ref));
-        }
-        if (formulaCells.length > 0 && !this.#batchFailed) {
-            try {
-                const results = await this.#formula.executeFormulas(
-                    this.buildFormulaMap(formulaCells),
-                    CONFIG.SOLVER_FORMULA_TIMEOUT_MS,
-                );
-                for (const { ref } of formulaCells) {
-                    const item = results[this.#unitId]?.[this.#sheetId]?.[ref.row]?.[ref.col]?.[0];
-                    values.set(keyOf(ref), typeof item?.value === 'number' ? item.value : null);
-                }
-            } catch (error) {
-                console.warn(
-                    'Solver batch formula evaluation failed; falling back to waiting for recalculation.',
-                    error,
-                );
-                this.#batchFailed = true;
-                await this.settle(objective);
-                for (const { ref } of formulaCells) {
-                    values.set(keyOf(ref), this.readCell(ref));
-                }
-            }
-        } else if (formulaCells.length > 0) {
-            await this.settle(objective);
-            for (const { ref } of formulaCells) {
-                values.set(keyOf(ref), this.readCell(ref));
-            }
         }
         const objectiveValue = values.get(keyOf(objective)) ?? null;
         const violations: number[] = [];

@@ -17,6 +17,7 @@ import { buildBlankWorkbookSnapshot } from './blank-workbook';
 import { deleteSnapshot, loadSnapshot, saveSnapshot } from './storage';
 import { exportSnapshotToXlsx } from './exporter';
 import { readXlsxFile } from './importer';
+import type { ImportedSolverParams } from './importer';
 import {
     clearStoredCredential,
     decodeCredential,
@@ -82,7 +83,11 @@ export class App {
     #saveTimer: number | undefined = undefined;
     #statusMessage: string = CONFIG.STATUS_LOADING;
     /** File read and waiting on the open-confirm dialog, if any. */
-    #pendingOpen: { fileName: string; snapshot: IWorkbookData } | null = null;
+    #pendingOpen: {
+        fileName: string;
+        snapshot: IWorkbookData;
+        solverParams: ImportedSolverParams | null;
+    } | null = null;
     /** Null while signed out; signing in never gates the sheet. */
     #signedInUser: SignedInUser | null = null;
     /** The Solver run in progress (or just finished, until it is decided). */
@@ -232,6 +237,19 @@ export class App {
         if (this.#univerAPI === null || this.#workbook === null) {
             return;
         }
+        // The Solver dialog is modeless, so the user can replace the
+        // workbook mid-solve; the run writes to the sheet being disposed,
+        // so cancel it first (restoring the originals) and close the
+        // dialog — its parameters belonged to the old workbook. A
+        // finished run just needs its state cleared.
+        if (this.#solverRun !== null) {
+            if (!this.#solverRun.finished) {
+                this.handleSolverCancelRun();
+            } else {
+                this.#solverRun = null;
+                this.#shell?.closeSolverDialog();
+            }
+        }
         window.clearTimeout(this.#saveTimer);
         this.#univerAPI.disposeUnit(this.#workbook.getId());
         this.openWorkbook(snapshot);
@@ -249,15 +267,19 @@ export class App {
 
     /** Read a picked file and ask whether to replace the workbook with it. */
     private async handleOpenFile(file: File): Promise<void> {
-        let snapshot: IWorkbookData;
+        let opened: Awaited<ReturnType<typeof readXlsxFile>>;
         try {
-            snapshot = await readXlsxFile(file);
+            opened = await readXlsxFile(file);
         } catch (error) {
             console.error('Failed to open the file.', error);
             this.setStatus(CONFIG.STATUS_OPEN_FAILED);
             return;
         }
-        this.#pendingOpen = { fileName: file.name, snapshot };
+        this.#pendingOpen = {
+            fileName: file.name,
+            snapshot: opened.snapshot,
+            solverParams: opened.solverParams,
+        };
         this.#shell?.openConfirmDialog(file.name);
     }
 
@@ -267,6 +289,11 @@ export class App {
         this.#pendingOpen = null;
         if (!confirmed || pending === null) {
             return;
+        }
+        // A file with a saved Solver model prefills the dialog; a file
+        // without one leaves the last-used parameters untouched.
+        if (pending.solverParams !== null) {
+            this.#solverLastParams = { ...pending.solverParams };
         }
         await this.replaceWorkbook(pending.snapshot, `Opened ${pending.fileName}.`);
     }
@@ -398,16 +425,10 @@ export class App {
             }
             parsedConstraints.push(parsed);
         }
-        const formula = this.#univerAPI?.getFormula();
-        const unitId = this.#workbook?.getId();
-        if (formula === undefined || unitId === undefined) {
-            this.#shell?.setSolverError('The formula engine is not ready. Try again.');
-            this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
-        }
-        const model = new SolverModel(sheet, formula, unitId);
+        const model = new SolverModel(sheet);
         // Let any just-entered formula calculate before reading the start.
-        await model.settle(objective);
+        const objectiveCurrent = model.readCell(objective);
+        await model.settle(objective, objectiveCurrent);
         const initial = model
             .readRange(changing)
             .flat()
@@ -509,12 +530,13 @@ export class App {
         let objectiveAfter: number | null = null;
         let message = '';
         if (state.status === 'optimal' || state.status === 'max-iterations') {
+            const objectiveBeforeWrite = model.readCell(objective);
             if (state.bestX.length > 0) {
                 model.writeValues(changing, state.bestX);
             }
             // The write lands synchronously but the formula recalculates
             // asynchronously, so read only after the value has settled.
-            await model.settle(objective);
+            await model.settle(objective, objectiveBeforeWrite);
             objectiveAfter = model.readCell(objective);
             if (state.status === 'max-iterations') {
                 message =
@@ -522,11 +544,12 @@ export class App {
             }
         } else {
             // Infeasible, unbounded, or cancelled: no solution to keep.
+            const objectiveBeforeWrite = model.readCell(objective);
             if (!run.restored) {
                 model.writeOriginals(changing, originals);
                 run.restored = true;
             }
-            await model.settle(objective);
+            await model.settle(objective, objectiveBeforeWrite);
             objectiveAfter = model.readCell(objective);
             if (state.status === 'infeasible') {
                 message = 'No point satisfies all the constraints; the original values were restored.';
@@ -573,6 +596,9 @@ export class App {
         this.#solverRun = null;
         window.clearTimeout(run.timer);
         run.engine.cancel();
+        // Flag the model first: an evaluation already in flight must not
+        // write another trial over the originals being restored.
+        run.model.cancel();
         if (!run.restored) {
             run.model.writeOriginals(run.changing, run.originals);
             run.restored = true;
