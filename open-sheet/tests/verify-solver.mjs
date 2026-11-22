@@ -24,6 +24,8 @@
  * in the cells, that Restore reverts to the originals, that Esc after a
  * solve keeps the solution, that Cancel restores the original values,
  * that the dialog reopens prefilled with the last-used parameters, that
+ * closing the dialog without solving keeps the parameters (Esc and Close
+ * button paths, including a constraint typed but not yet added), that
  * invalid input shows an error, and that opening a file with a saved
  * Solver model prefills the dialog from it. It also checks the
  * "already optimal" note: shown when a solve starts at the optimum,
@@ -308,6 +310,50 @@ try {
         '"already optimal" note is hidden when the dialog reopens',
         (await optimalNote.isHidden()) === true,
     );
+    await page.locator('#solver-close').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+
+    // ---- Closing the dialog without solving keeps the parameters. ----
+    // Set parameters, close without clicking Solve, reopen: everything
+    // must still be there — the dialog remembers the last-used values
+    // on close, not just when a solve starts. Both close paths are
+    // covered: Esc, then the Close button. A constraint typed into the
+    // edit row but not yet added must survive too, as a list entry.
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await fillSolverForm({ objective: 'C1', goal: 'max', changing: 'A1' });
+    await page.locator('#solver-constraint-left').fill('A1');
+    await page.locator('#solver-constraint-operator').selectOption('<=');
+    await page.locator('#solver-constraint-right').fill('0.9');
+    await page.keyboard.press('Escape');
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    const constraintsAfterEsc = (await page.locator('#solver-constraints').textContent()) ?? '';
+    check(
+        'dialog reopens prefilled after Esc close without solving',
+        (await page.locator('#solver-objective').inputValue()) === 'C1' &&
+            (await page.locator('#solver-changing').inputValue()) === 'A1' &&
+            (await page.locator('input[name="solver-goal"][value="max"]').isChecked()) === true &&
+            constraintsAfterEsc.trim() === 'C1 >= 1A1 <= 0.9',
+        constraintsAfterEsc.trim(),
+    );
+    await page.locator('#solver-close').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    const constraintsAfterClose = (await page.locator('#solver-constraints').textContent()) ?? '';
+    check(
+        'dialog reopens prefilled after Close without solving',
+        (await page.locator('#solver-objective').inputValue()) === 'C1' &&
+            (await page.locator('#solver-changing').inputValue()) === 'A1' &&
+            constraintsAfterClose.trim() === 'C1 >= 1A1 <= 0.9',
+        constraintsAfterClose.trim(),
+    );
+    // Restore the problem-1 parameters so the next problem starts clean.
+    await fillSolverForm({ objective: 'B1', goal: 'min', changing: 'A1:A2' });
+    await page.locator('#solver-constraints li', { hasText: 'A1 <= 0.9' }).click();
+    await page.locator('#solver-delete-constraint').click();
     await page.locator('#solver-close').click();
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
 

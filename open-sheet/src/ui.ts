@@ -89,6 +89,8 @@ export type Shell = {
     getGoogleButtonSlot: () => HTMLElement;
     /** Show the Solver dialog, prefilled with the last-used parameters. */
     openSolverDialog: (prefill: SolverFormValues & { constraints: SolverConstraintInput[] }) => void;
+    /** Read the dialog's current form values (for remembering them on close). */
+    readSolverFormValues: () => SolverFormValues & { constraints: SolverConstraintInput[] };
     /** Show a validation message in the Solver dialog (null clears it). */
     setSolverError: (message: string | null) => void;
     /** Show or hide the solving state (progress line, Cancel, disabled Solve). */
@@ -636,6 +638,29 @@ const SOLVER_ALREADY_OPTIMAL_NOTE =
             // and editable while the dialog is open, before solving and
             // on the results view.
             solverDialog.show();
+        },
+        readSolverFormValues(): SolverFormValues & { constraints: SolverConstraintInput[] } {
+            // A constraint typed into the edit row but not yet added is
+            // still something the user entered — keep it as a list entry
+            // so it survives the close too. But the edit row also keeps
+            // the last added (or selected) constraint after Add/Change,
+            // so only keep it when it is not already in the list —
+            // otherwise every close would duplicate that entry, and the
+            // duplicate would leak into the next problem's constraints.
+            const constraints = [...solverConstraints];
+            const pending = readConstraintEdit();
+            if (
+                pending !== null &&
+                !constraints.some(
+                    (constraint) =>
+                        constraint.left === pending.left &&
+                        constraint.operator === pending.operator &&
+                        constraint.right === pending.right,
+                )
+            ) {
+                constraints.push(pending);
+            }
+            return { ...readSolverForm(), constraints };
         },
         setSolverError(message: string | null): void {
             setSolverErrorText(message);

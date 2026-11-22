@@ -109,7 +109,10 @@ async function main() {
                 `canvases: ${canvasCount}, container children: ${containerChildren}`,
             );
             const statusText = await page.locator('#status').innerText();
-            check('status line reports ready', /Ready/.test(statusText), statusText);
+            // Either is a healthy booted state: autosave may already have
+            // run (800 ms after the load) and overwritten "Ready" with
+            // "Workbook saved." before this check reads the line.
+            check('status line reports ready', /Ready|Workbook saved/.test(statusText), statusText);
 
             // Optional sign-in: the button is there, nobody is signed in,
             // and the sheet works the same without signing in.

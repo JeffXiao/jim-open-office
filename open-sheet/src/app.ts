@@ -743,6 +743,17 @@ export class App {
 
     /** The dialog closed without a button deciding the outcome. */
     private handleSolverDialogClosed(): void {
+        // Remember whatever is in the form — even if the user never
+        // clicked Solve — so the dialog reopens prefilled with the
+        // last-used parameters instead of blank defaults. The close
+        // event fires for every close path (Close button, Esc,
+        // programmatic close), so this covers them all. No validation
+        // here: a half-filled form is still worth remembering, and
+        // Solve-time validation is unchanged.
+        const current = this.#shell?.readSolverFormValues();
+        if (current !== undefined) {
+            this.#solverLastParams = { ...current, constraints: [...current.constraints] };
+        }
         if (this.#solverStarting) {
             // Closed while the setup was still running: abandon it so
             // the setup never starts a run nobody can see.
