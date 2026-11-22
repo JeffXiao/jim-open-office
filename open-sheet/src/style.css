@@ -37,6 +37,8 @@
         --color-accent: #0969da;
         --color-accent-text: #ffffff;
         --color-focus: #0969da;
+        --color-error: #cf222e;
+        --color-selected-bg: #ddf4ff;
         --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
         --space-sm: 0.5rem;
         --space-md: 1rem;
@@ -58,6 +60,8 @@
             --color-accent: #2f81f7;
             --color-accent-text: #ffffff;
             --color-focus: #2f81f7;
+            --color-error: #ff7b72;
+            --color-selected-bg: #0c2d6b;
         }
     }
 
@@ -220,6 +224,184 @@
     dialog form button:focus-visible {
         outline: 2px solid var(--color-focus);
         outline-offset: 2px;
+    }
+
+    #solver-dialog {
+        inline-size: min(36rem, calc(100vw - 2rem));
+        max-inline-size: 36rem;
+    }
+
+    #solver-form {
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: var(--space-sm);
+        margin-block-start: var(--space-sm);
+    }
+
+    #solver-form .solver-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+
+    #solver-form .solver-field input[type='text'],
+    #solver-form .solver-field select,
+    #solver-form .solver-constraint-edit input[type='text'],
+    #solver-form .solver-constraint-edit select {
+        min-block-size: var(--toolbar-button-size);
+        padding-inline: 0.5rem;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-bg);
+        color: var(--color-text);
+        font: inherit;
+    }
+
+    #solver-form .solver-field input:focus-visible,
+    #solver-form .solver-field select:focus-visible,
+    #solver-form .solver-constraint-edit input:focus-visible,
+    #solver-form .solver-constraint-edit select:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
+    }
+
+    #solver-form .solver-fieldset {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem 1rem;
+        padding: var(--space-sm);
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+    }
+
+    #solver-form .solver-fieldset label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    #solver-form .solver-fieldset #solver-target {
+        flex: 1 1 8rem;
+    }
+
+    #solver-form .solver-check {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    #solver-form .solver-constraints {
+        max-block-size: 8rem;
+        overflow-y: auto;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+    }
+
+    #solver-form .solver-constraints li {
+        padding: 0.35rem 0.5rem;
+        border-block-end: 1px solid var(--color-border);
+        cursor: pointer;
+    }
+
+    #solver-form .solver-constraints li:last-child {
+        border-block-end: none;
+    }
+
+    #solver-form .solver-constraints li.selected {
+        background: var(--color-selected-bg);
+    }
+
+    #solver-form .solver-constraints .solver-empty {
+        color: var(--color-text-muted);
+        cursor: default;
+    }
+
+    #solver-form .solver-constraint-edit {
+        display: flex;
+        gap: var(--space-sm);
+        margin-block-start: var(--space-sm);
+    }
+
+    #solver-form .solver-constraint-edit input {
+        flex: 1;
+        min-inline-size: 0;
+    }
+
+    #solver-form .solver-constraint-actions {
+        display: flex;
+        gap: var(--space-sm);
+        margin-block-start: var(--space-sm);
+    }
+
+    #solver-form .solver-actions,
+    #solver-results .solver-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--space-sm);
+        margin-block-start: var(--space-sm);
+    }
+
+    #solver-form .solver-actions button,
+    #solver-results .solver-actions button {
+        min-block-size: var(--toolbar-button-size);
+        padding-inline: 0.75rem;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-bg);
+        color: var(--color-text);
+        cursor: pointer;
+    }
+
+    #solver-form .solver-actions button:focus-visible,
+    #solver-results .solver-actions button:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
+    }
+
+    #solver-solve,
+    #solver-keep {
+        background: var(--color-accent);
+        border-color: var(--color-accent);
+        color: var(--color-accent-text);
+    }
+
+    #solver-error {
+        color: var(--color-error);
+        margin-block-end: var(--space-sm);
+    }
+
+    #solver-progress {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+
+    #solver-results h3 {
+        margin-block-start: var(--space-md);
+        font-size: 1rem;
+    }
+
+    #solver-results-list {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.25rem 1rem;
+        margin-block-start: var(--space-sm);
+    }
+
+    #solver-results-list dt {
+        color: var(--color-text-muted);
+    }
+
+    #solver-results-list dd {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+    }
+
+    #solver-dialog .hidden {
+        display: none;
     }
 }
 
