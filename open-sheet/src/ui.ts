@@ -17,7 +17,6 @@ import type { SignedInUser } from './auth';
 import { CONFIG } from './config';
 
 export type ShellActions = {
-    onSave: () => void;
     onExport: () => void;
     /** Called with true when the user confirms the reset, false otherwise. */
     onResetDecision: (confirmed: boolean) => void;
@@ -103,7 +102,7 @@ export type Shell = {
 };
 
 /** All toolbar buttons carry one of these actions. */
-const TOOLBAR_ACTIONS = ['save', 'open', 'export', 'reset', 'solver', 'signin', 'signout'] as const;
+const TOOLBAR_ACTIONS = ['open', 'export', 'reset', 'solver', 'signin', 'signout'] as const;
 type ToolbarAction = (typeof TOOLBAR_ACTIONS)[number];
 
 function isToolbarAction(value: string | null): value is ToolbarAction {
@@ -420,9 +419,7 @@ const SOLVER_ALREADY_OPTIMAL_NOTE =
         if (!isToolbarAction(action)) {
             return;
         }
-        if (action === 'save') {
-            actions.onSave();
-        } else if (action === 'open') {
+        if (action === 'open') {
             fileInput.click();
         } else if (action === 'export') {
             actions.onExport();

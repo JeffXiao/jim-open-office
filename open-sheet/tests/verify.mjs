@@ -140,6 +140,20 @@ async function main() {
                 statusAfterSignin,
             );
 
+            // The toolbar is Open / Export .xlsx / Reset / Solver /
+            // Sign in: autosave already saves, so there is no Save button.
+            const toolbarActions = await page
+                .locator('#app-toolbar button[data-action]')
+                .evaluateAll((buttons) =>
+                    buttons.map((button) => button.getAttribute('data-action')),
+                );
+            check(
+                'toolbar has Open, Export, Reset, Solver, Sign in — and no Save button',
+                JSON.stringify(toolbarActions) ===
+                    JSON.stringify(['open', 'export', 'reset', 'solver', 'signin', 'signout']),
+                toolbarActions.join(', '),
+            );
+
             await page.screenshot({ path: path.join(DIR, 'verify-screenshot.png') });
 
             // Edit cells and confirm a formula recalculates.

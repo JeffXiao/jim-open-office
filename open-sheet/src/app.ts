@@ -96,6 +96,16 @@ export class App {
     #signedInUser: SignedInUser | null = null;
     /** The Solver run in progress (or just finished, until it is decided). */
     #solverRun: SolverRun | null = null;
+    /** True while a solve's async setup is running (no run assigned yet). */
+    #solverStarting = false;
+    /** The dialog was closed while a solve was starting: abandon it. */
+    #solverSetupCancelled = false;
+    /** The solve currently in setup: its model and pre-solve snapshot, so a cancel can stop trial writes and restore the originals at once. */
+    #solverStartingState: {
+        model: SolverModel;
+        changing: RangeRef;
+        originals: OriginalCell[][];
+    } | null = null;
     /** The Solver dialog's last-used parameters, for prefilling on reopen. */
     #solverLastParams: (SolverFormValues & { constraints: SolverConstraintInput[] }) | null = null;
 
@@ -118,9 +128,6 @@ export class App {
         this.#univerAPI = univerAPI;
 
         this.#shell = createShell(spriteUrl, {
-            onSave: () => {
-                void this.saveWorkbook();
-            },
             onExport: () => {
                 this.exportXlsx();
             },
@@ -366,23 +373,67 @@ export class App {
                 constraints: [],
             },
         );
+        // The dialog is modeless: it may have been closed and reopened
+        // while a run is active — re-apply the solving state so Solve
+        // stays disabled and Cancel stays visible for the whole run.
+        const run = this.#solverRun;
+        if (run !== null && !run.finished) {
+            this.#shell?.setSolverSolving(true);
+            this.#shell?.setSolverProgress(this.solverProgressMessage(run.engine.getState()));
+        }
     }
 
-    /** Validate the dialog's inputs and start a Solver run on the active sheet. */
+    /** The progress line for a Solver run's current engine state. */
+    private solverProgressMessage(state: ReturnType<Solver['getState']>): string {
+        return `Iteration ${state.iterations} — ${state.evaluations} evaluations — objective ${formatSolverNumber(state.bestObjective)}`;
+    }
+
+    /**
+     * Start a Solver run from the dialog's inputs. Ignores the request
+     * while a run is already going (or starting) — Cancel is the way to
+     * stop it — and disables Solve immediately, before the async setup
+     * below, so the modeless dialog can never start a second run.
+     */
     private async handleSolverSolve(
         values: SolverFormValues,
         constraints: SolverConstraintInput[],
     ): Promise<void> {
+        if (this.#solverRun !== null && !this.#solverRun.finished) {
+            return;
+        }
+        if (this.#solverStarting) {
+            return;
+        }
+        this.#solverStarting = true;
+        this.#shell?.setSolverSolving(true);
+        let started = false;
+        try {
+            started = await this.startSolverSolve(values, constraints);
+        } finally {
+            this.#solverStarting = false;
+            this.#solverSetupCancelled = false;
+            this.#solverStartingState = null;
+            if (!started) {
+                this.#shell?.setSolverSolving(false);
+            }
+        }
+    }
+
+    /** Validate the dialog's inputs and start a Solver run on the active sheet. Returns true when a run started. */
+    private async startSolverSolve(
+        values: SolverFormValues,
+        constraints: SolverConstraintInput[],
+    ): Promise<boolean> {
         const sheet = this.#workbook?.getActiveSheet();
         if (sheet === undefined || sheet === null) {
             this.#shell?.setSolverError('No workbook is open.');
-            return;
+            return false;
         }
         const objective = parseCellAddress(values.objective);
         if (objective === null) {
             this.#shell?.setSolverError('Set Objective must be a cell address, e.g. BM60.');
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
+            return false;
         }
         const changing = parseRange(values.changing);
         if (changing === null) {
@@ -390,7 +441,7 @@ export class App {
                 'By Changing Variable Cells must be a cell or a range, e.g. BM31:BM49.',
             );
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
+            return false;
         }
         if (
             objective.row >= changing.start.row &&
@@ -400,7 +451,7 @@ export class App {
         ) {
             this.#shell?.setSolverError('The objective cell cannot be one of the changing cells.');
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
+            return false;
         }
         let target: number | null = null;
         if (values.goal === 'value') {
@@ -408,13 +459,13 @@ export class App {
             if (values.targetValue === '' || !Number.isFinite(target)) {
                 this.#shell?.setSolverError('Value Of needs a number, e.g. 0.5.');
                 this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-                return;
+                return false;
             }
         }
         if (values.method !== 'grg') {
             this.#shell?.setSolverError('Only the GRG Nonlinear method is implemented in this version.');
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
+            return false;
         }
         const parsedConstraints: SolverConstraint[] = [];
         for (let index = 0; index < constraints.length; index++) {
@@ -425,7 +476,7 @@ export class App {
                     `Constraint ${index + 1} is not valid — check its cell or range, operator, and number or cell.`,
                 );
                 this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-                return;
+                return false;
             }
             parsedConstraints.push(parsed);
         }
@@ -438,11 +489,12 @@ export class App {
             .flat()
             .map((value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0));
         const originals = model.readOriginals(changing);
+        this.#solverStartingState = { model, changing, originals };
         const objectiveBefore = model.readCell(objective);
         if (objectiveBefore === null) {
             this.#shell?.setSolverError('The objective cell does not contain a number yet.');
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
-            return;
+            return false;
         }
         // Remember the parameters so the dialog reopens prefilled.
         this.#solverLastParams = {
@@ -475,6 +527,14 @@ export class App {
             evaluate,
             project: projectTrial,
         });
+        // The dialog was closed while the setup was running: the user
+        // meant to cancel, so abandon the run and restore the originals
+        // instead of starting a solve nobody can see.
+        if (this.#solverSetupCancelled) {
+            model.writeOriginals(changing, originals);
+            this.setStatus(CONFIG.STATUS_SOLVER_CANCELLED);
+            return false;
+        }
         this.#solverRun = {
             engine,
             model,
@@ -494,6 +554,7 @@ export class App {
         this.#solverRun.timer = window.setTimeout(() => {
             void this.runSolverSlice();
         }, 0);
+        return true;
     }
 
     /** Run one slice of the stepwise engine, then schedule the next. */
@@ -517,9 +578,7 @@ export class App {
             return;
         }
         const state = run.engine.getState();
-        this.#shell?.setSolverProgress(
-            `Iteration ${state.iterations} — ${state.evaluations} evaluations — objective ${formatSolverNumber(state.bestObjective)}`,
-        );
+        this.#shell?.setSolverProgress(this.solverProgressMessage(state));
         if (finished) {
             void this.finishSolverRun();
         } else {
@@ -609,8 +668,34 @@ export class App {
         }
     }
 
+    /**
+     * Abandon a solve still in setup: stop any further trial writes and
+     * restore the originals now. The setup's own abort branch repeats
+     * the restore when it returns, so a cancel lands synchronously
+     * instead of leaving trial values on the sheet until the setup
+     * resolves.
+     */
+    private abandonSolverSetup(): void {
+        this.#solverSetupCancelled = true;
+        const starting = this.#solverStartingState;
+        if (starting !== null) {
+            starting.model.cancel();
+            starting.model.writeOriginals(starting.changing, starting.originals);
+        }
+    }
+
     /** Cancel a running solve, restore the originals, and close the dialog. */
     private handleSolverCancelRun(): void {
+        // Cancelled while the setup was still running: there is no run
+        // to restore yet — abandon the setup and close the dialog now.
+        if (this.#solverStarting) {
+            this.abandonSolverSetup();
+            this.#shell?.setSolverSolving(false);
+            this.#shell?.setSolverProgress(null);
+            this.#shell?.closeSolverDialog();
+            this.setStatus(CONFIG.STATUS_SOLVER_CANCELLED);
+            return;
+        }
         const run = this.#solverRun;
         if (run === null) {
             return;
@@ -658,6 +743,12 @@ export class App {
 
     /** The dialog closed without a button deciding the outcome. */
     private handleSolverDialogClosed(): void {
+        if (this.#solverStarting) {
+            // Closed while the setup was still running: abandon it so
+            // the setup never starts a run nobody can see.
+            this.abandonSolverSetup();
+            return;
+        }
         const run = this.#solverRun;
         if (run === null) {
             return;

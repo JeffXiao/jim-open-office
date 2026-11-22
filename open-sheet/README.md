@@ -21,10 +21,10 @@ npm run preview  # serve the production build locally
 - A blank workbook on open (one empty sheet, "Sheet1"). Nothing is
   pre-loaded; the user builds their own sheet.
 - Save/reload from IndexedDB (autosave ~800 ms after the last edit, plus a
-  Save button and save on page hide).
+  save on page hide).
 - One-click .xlsx export via SheetJS, with formulas preserved so Excel
   recalculates.
-- A minimal app shell: toolbar (Save / Export .xlsx / Reset),
+- A minimal app shell: toolbar (Export .xlsx / Reset),
   the sheet, a status line, and a native-dialog reset confirmation.
 - An optional Sign in button (Google). Signing in is never required: the
   sheet works fully without it, and it does not gate anything. See
@@ -184,6 +184,85 @@ Each evaluation still waits for the sheet recalculation, ~10ms on a
 small workbook and ~30–50ms on a workbook with a long formula chain,
 so a 19-variable solve on a heavy workbook is on the order of ten
 seconds.
+
+## How the Solver works
+
+In plain terms: you pick one objective cell to maximize, minimize, or
+drive to a target value; you pick a range of variable cells it may
+change; and you add constraints (for example, every weight at least
+zero, and the total at most 100%). The Solver then searches for the
+combination of variable values that gives the best objective without
+breaking a constraint.
+
+**The gradient strategy (the default engine).** The engine is a
+gradient-based optimizer — GRG-style, using the L-BFGS method, the same
+family Excel's GRG Nonlinear solver belongs to. It works like this:
+
+1. **Measure the slope.** For each variable in turn, it nudges the
+   value a tiny amount up and then down (a step of 0.000001) and reads
+   how much the objective moves — that gives the slope (the gradient)
+   in every direction at once. The slope has to be measured this way,
+   by trying small changes, because the objective is a formula in the
+   sheet, not a known equation the program can differentiate.
+2. **Move everything together.** Instead of changing one cell at a
+   time, it moves *all* the variables at once, in the uphill direction
+   the slope points to. A line search then decides how far to step:
+   it tries a step, and shortens it until the objective genuinely
+   improves.
+3. **Repeat until the improvements become tiny.** Each round re-measures
+   the slope at the new point and steps again, until a step barely
+   changes the objective — that means it has arrived.
+
+L-BFGS improves on plain uphill climbing by remembering the last few
+steps (five, in this build) and using them to pick a better direction
+than the raw slope alone — roughly, it learns the shape of the hill as
+it climbs, so it wastes fewer steps zig-zagging.
+
+**Why a gradient method instead of Nelder-Mead.** The previous engine,
+Nelder-Mead, is trial and error: it never measures the slope, so it
+feels its way forward in thousands of tiny steps — in 19 variables it
+needed about 10,000 iterations. The gradient method uses the slope, so
+it walks straight at the answer and converges in tens of iterations.
+Nelder-Mead is kept as a fallback path in the engine.
+
+**Constraints.** Before any trial is written to the sheet, a projector
+repairs it against every rule it can express: a weight below zero is
+clamped to zero, a weight over its cap is clamped to the cap, and a
+total over its cap is scaled back proportionally — so the sheet never
+shows a trial breaking one of those rules, not even mid-solve. A
+constraint the projector cannot read — one whose left side is a formula
+rather than a plain total, such as a volatility cell — is handled by a
+quadratic penalty instead: breaking it makes the objective look worse,
+so the search steers away from it. The line search also caps each trial
+to a 0.15 change per variable and never accepts a step that makes
+feasibility worse. The final answer always respects every constraint,
+and best-feasible tracking means the answer written back is always the
+best *feasible* point found — never an infeasible one, even if the run
+stopped at the iteration limit.
+
+**The transfer polish.** A finishing step for when the optimum sits on
+the sum boundary (the total exactly at its cap): it moves value between
+pairs of variables while keeping the total fixed, squeezing out the
+last improvement the main search cannot reach by stepping uphill.
+
+**How much faster, in practice.** On the 19-variable test problem the
+old engine took 10,000 iterations and about six minutes; the gradient
+engine takes 3 iterations and 120 evaluations. On a real portfolio file
+(maximize the Sharpe ratio from a zeroed start) the old engine took
+about 5,060 iterations and 5.6 minutes; the gradient engine takes 31
+iterations, 2,600 evaluations, and 134 seconds — and reaches the same
+optimum (Sharpe 3.6605).
+
+**Honest limits.** A gradient step is pricier than a single trial:
+measuring the slope costs two evaluations per variable (one nudge up,
+one down), so a 19-variable gradient costs 38 evaluations before the
+step is even taken — the win comes from needing far fewer steps. A
+formula-side constraint can in principle still read over its limit
+mid-solve (the displacement cap makes it unlikely, and the final answer
+always respects it). And the method assumes a smooth objective: it
+climbs the slope it can measure, so a jagged or discontinuous formula
+can mislead it where a trial-and-error method would keep feeling
+around.
 
 ## Versions (pinned)
 

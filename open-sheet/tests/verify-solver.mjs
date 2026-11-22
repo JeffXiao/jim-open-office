@@ -28,7 +28,10 @@
  * Solver model prefills the dialog from it. It also checks the
  * "already optimal" note: shown when a solve starts at the optimum,
  * hidden after a genuine improvement, and hidden again when the dialog
- * reopens for a new solve.
+ * reopens for a new solve. And that Solve stays disabled for the whole
+ * run: closing the dialog during setup abandons the run instead of
+ * starting one nobody can see, and a forced submit mid-run cannot
+ * start a second run.
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -376,10 +379,54 @@ try {
     const statusAfterCancel = (await page.locator('#status').textContent()) ?? '';
     check('status reports the cancelled solve', statusAfterCancel.includes('cancelled'), statusAfterCancel);
 
+    // ---- Closing during setup abandons the run (no invisible solve). ----
+    // Solve's setup awaits the first recalculation and the engine's
+    // initial evaluations, so closing right after Solve lands inside
+    // it. The setup must then be abandoned — never a run the user
+    // cannot see — and reopening shows the idle form. (If the close
+    // lands after setup instead, the normal cancel path applies; the
+    // assertions below hold either way.)
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#solver-solve').click();
+    await page.locator('#solver-close').click();
+    // Longer than the setup takes, so it has resolved either way.
+    await page.waitForTimeout(1500);
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    check(
+        'reopening after closing mid-setup shows Solve enabled (no invisible run)',
+        (await page.locator('#solver-solve').isDisabled()) === false &&
+            (await page.locator('#solver-cancel-run').isHidden()),
+    );
+    let setupAbandoned = true;
+    for (let row = 1; row <= 19; row++) {
+        if ((await inspect(`A${row}`))?.rawValue !== 0.05) {
+            setupAbandoned = false;
+            break;
+        }
+    }
+    check('closing mid-setup leaves the original values (0.05)', setupAbandoned);
+
     // ---- Solve problem 2 for real. ----
     await page.locator('[data-action="solver"]').click();
     await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
     await page.locator('#solver-solve').click();
+    // While a run is active the Solve button stays disabled — and even
+    // a forced submit must not start a second run (the guard ignores
+    // it; Cancel is the way to stop). The run below must therefore
+    // still report the original start (objective before 1.2847), not
+    // a trial value a second run would have read.
+    await page.locator('#solver-cancel-run').waitFor({ state: 'visible', timeout: 5000 });
+    check(
+        'Solve stays disabled while a run is active',
+        (await page.locator('#solver-solve').isDisabled()) === true,
+    );
+    await page.evaluate(() => {
+        const solve = document.querySelector('#solver-solve');
+        solve.disabled = false;
+        solve.click();
+    });
     // Settle-based evaluation waits for the sheet recalculation on every
     // trial (~10ms on a small workbook), so the 19-variable solve needs
     // a long window.
