@@ -462,12 +462,18 @@ export class App {
             return result;
         };
         const count = rangeSize(changing);
+        // Project trials onto the feasible set before they are written:
+        // a trial that would break a projectable rule (a weight below
+        // zero, over its cap, or a total over its cap) is repaired
+        // first, so the sheet never shows one breaking it mid-solve.
+        const projectTrial = model.projector(changing, parsedConstraints);
         const engine = await createSolver({
             goal: values.goal === 'min' || values.goal === 'value' ? 'min' : 'max',
             initial,
             lowerBounds: Array.from({ length: count }, () => (values.nonNegative ? 0 : null)),
             upperBounds: Array.from({ length: count }, () => null as number | null),
             evaluate,
+            project: projectTrial,
         });
         this.#solverRun = {
             engine,

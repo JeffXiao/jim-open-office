@@ -17,6 +17,11 @@
  *   squared violations. rho grows each outer round, pulling the search
  *   toward feasible points.
  * - Bounds are enforced by clamping trial points into the box.
+ * - When a `project` function is supplied, trial points are first mapped
+ *   onto the feasible set (before they are evaluated or stored as a
+ *   simplex vertex), so no infeasible trial is ever written to the
+ *   sheet; the penalty remains the backstop for constraints the
+ *   projector cannot express.
  * - Non-finite objective values are treated as a large penalty, never a crash.
  * - After the penalty rounds, a transfer polish (see startPolish) slides
  *   the best feasible point along a sum boundary, the move Nelder-Mead
@@ -49,6 +54,16 @@ export type SolverOptions = {
     /** May be synchronous (pure tests) or async (sheet-backed: the formula
      * engine recalculates after a write, so the bridge awaits the recalc). */
     evaluate: (x: number[]) => SolverEvaluation | Promise<SolverEvaluation>;
+    /**
+     * Optional feasibility projection: maps each trial point onto the
+     * feasible set before it is evaluated — and before it is stored
+     * as a simplex vertex, so the engine's view of the search space
+     * stays consistent with what was actually evaluated. The sheet
+     * bridge supplies this from the constraints; without it, an
+     * infeasible trial is written to the sheet and only discouraged
+     * by the penalty, so the sheet shows it breaking a rule mid-solve.
+     */
+    project?: (x: number[]) => number[];
     maxIterations?: number;
     tolerance?: number;
     /** Override CONFIG.SOLVER_STAGNATION_LIMIT (for tests). */
@@ -112,6 +127,10 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
     const maxIterations = options.maxIterations ?? CONFIG.SOLVER_MAX_ITERATIONS;
     const tolerance = options.tolerance ?? CONFIG.SOLVER_TOLERANCE;
     const stagnationLimit = options.stagnationLimit ?? CONFIG.SOLVER_STAGNATION_LIMIT;
+
+    /** Project a trial point onto the feasible set (identity when no projector). */
+    const projectPoint = (point: number[]): number[] =>
+        options.project ? options.project(point) : point;
 
     let status: SolverStatus = 'running';
     let iterations = 0;
@@ -216,12 +235,27 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
         return goalValue + rho * penalty;
     };
 
+    /**
+     * End the run. The saved best is the best FEASIBLE point found: a
+     * "solution" status (optimal, max-iterations) promises the caller
+     * a point it may write back, so it is only ever reported when such
+     * a point exists. When no feasible point was found — the start was
+     * infeasible and no trial ever satisfied every constraint — the
+     * run is infeasible instead, and the caller restores the originals
+     * rather than writing back the least-violating infeasible point.
+     * (The one path that could report max-iterations with no feasible
+     * point is the iteration cap in step(), which does not check
+     * first; the outer-round path already passes 'infeasible' there.)
+     */
     const finish = (next: Exclude<SolverStatus, 'running'>): void => {
         if (finished) {
             return;
         }
         finished = true;
-        status = next;
+        status =
+            bestFeasible === null && (next === 'optimal' || next === 'max-iterations')
+                ? 'infeasible'
+                : next;
     };
 
     /**
@@ -232,14 +266,14 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
     const buildSimplex = async (
         center: number[],
     ): Promise<{ vertices: number[][]; values: number[] }> => {
-        const vertices: number[][] = [clamp([...center])];
+        const vertices: number[][] = [projectPoint(clamp([...center]))];
         for (let i = 0; i < dimension; i++) {
             const vertex = [...center];
             const base = vertex[i] ?? 0;
             vertex[i] =
                 base +
                 (base === 0 ? CONFIG.SOLVER_STEP_FALLBACK : Math.abs(base) * CONFIG.SOLVER_STEP_FRACTION);
-            vertices.push(clamp(vertex));
+            vertices.push(projectPoint(clamp(vertex)));
         }
         const values: number[] = [];
         for (const vertex of vertices) {
@@ -287,15 +321,18 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
      * transfer keeps the sum of the changing cells fixed, so it slides
      * along a sum boundary — the move Nelder-Mead cannot make from a
      * boundary point, where its reflections either cross the boundary or
-     * move one variable alone. The polish runs only when an infeasible
-     * point near the boundary beats the best feasible objective — the
-     * signature of a boundary optimum the simplex walked past. Only
-     * feasible improvements are accepted. It runs stepwise (a few pairs
-     * per step) so the UI stays responsive during a long polish.
+     * move one variable alone. The polish runs when an infeasible point
+     * near the boundary beats the best feasible objective — the signature
+     * of a boundary optimum the simplex walked past — or, forced, at the
+     * iteration cap, where the projection can leave no infeasible point
+     * to signal it. Only feasible improvements are accepted. It runs
+     * stepwise (a few pairs per step) so the UI stays responsive during
+     * a long polish.
      */
     let polish: {
         point: number[];
         objective: number;
+        startObjective: number;
         step: number;
         pairIndex: number;
         improvedInSweep: boolean;
@@ -303,20 +340,34 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
         startEvaluations: number;
     } | null = null;
 
-    /** Begin the transfer polish, or finish at once when it cannot help. */
-    const startPolish = (pendingStatus: Exclude<SolverStatus, 'running'>): void => {
-        if (bestFeasible === null || bestInfeasible === null) {
+    /** Begin the transfer polish, or finish at once when it cannot help.
+     * With force=true the polish runs from the best feasible point even
+     * when no infeasible point beats it — the projection can leave no
+     * infeasible point at all, so the usual signal is absent. The polish
+     * only accepts feasible improvements, so forcing it cannot make the
+     * answer infeasible. */
+    const startPolish = (
+        pendingStatus: Exclude<SolverStatus, 'running'>,
+        force = false,
+    ): void => {
+        if (bestFeasible === null) {
             finish(pendingStatus);
             return;
         }
-        if (!isBetter(bestInfeasible.objective, bestFeasible.objective)) {
-            finish(pendingStatus);
-            return;
-        }
-        const gap = Math.abs(bestInfeasible.objective - bestFeasible.objective);
-        if (gap <= tolerance * (1 + Math.abs(bestFeasible.objective))) {
-            finish(pendingStatus);
-            return;
+        if (!force) {
+            if (bestInfeasible === null) {
+                finish(pendingStatus);
+                return;
+            }
+            if (!isBetter(bestInfeasible.objective, bestFeasible.objective)) {
+                finish(pendingStatus);
+                return;
+            }
+            const gap = Math.abs(bestInfeasible.objective - bestFeasible.objective);
+            if (gap <= tolerance * (1 + Math.abs(bestFeasible.objective))) {
+                finish(pendingStatus);
+                return;
+            }
         }
         let step =
             Math.max(...bestFeasible.x.map((value) => Math.abs(value))) *
@@ -327,6 +378,7 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
         polish = {
             point: [...bestFeasible.x],
             objective: bestFeasible.objective,
+            startObjective: bestFeasible.objective,
             step,
             pairIndex: 0,
             improvedInSweep: false,
@@ -343,7 +395,20 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
         if (bestFeasible !== null && isBetter(polish.objective, bestFeasible.objective)) {
             bestFeasible = { x: polish.point, objective: polish.objective, violation: 0 };
         }
-        const pendingStatus = polish.pendingStatus;
+        let pendingStatus = polish.pendingStatus;
+        if (
+            pendingStatus === 'max-iterations' &&
+            Math.abs(polish.objective - polish.startObjective) <=
+                tolerance * (1 + Math.abs(polish.startObjective))
+        ) {
+            // The polish could not improve the starting point by a
+            // meaningful amount: the simplex had already reached the
+            // optimum and merely crawled there slowly — the projection
+            // pins it to the boundary, so its diameter shrinks too
+            // slowly to converge before the cap. The run is optimal,
+            // not cut short.
+            pendingStatus = 'optimal';
+        }
         polish = null;
         finish(pendingStatus);
     };
@@ -391,9 +456,10 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             if (amount <= 0) {
                 continue;
             }
-            const trial = [...polish.point];
-            trial[i] = (trial[i] ?? 0) - amount;
-            trial[j] = (trial[j] ?? 0) + amount;
+            const trialBase = [...polish.point];
+            trialBase[i] = (trialBase[i] ?? 0) - amount;
+            trialBase[j] = (trialBase[j] ?? 0) + amount;
+            const trial = projectPoint(trialBase);
             evaluations += 1;
             const result = await options.evaluate(trial);
             processed += 1;
@@ -475,7 +541,11 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             return polishStep();
         }
         if (iterations >= maxIterations) {
-            startPolish('max-iterations');
+            // Force the polish: with the projection there may be no
+            // infeasible point to signal a boundary optimum, and the
+            // polish is the move that finishes one. finishPolish
+            // reports optimal when the polish confirms the point.
+            startPolish('max-iterations', true);
             return finished;
         }
         sortSimplex();
@@ -493,16 +563,18 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             center.map((value, j) => value + factor * ((direction[j] ?? 0) - value));
 
         // Reflection: through the centroid, away from the worst vertex.
-        const reflected = clamp(
-            center.map(
-                (value, j) =>
-                    value + CONFIG.SOLVER_NM_REFLECTION * (value - (worst[j] ?? 0)),
+        const reflected = projectPoint(
+            clamp(
+                center.map(
+                    (value, j) =>
+                        value + CONFIG.SOLVER_NM_REFLECTION * (value - (worst[j] ?? 0)),
+                ),
             ),
         );
         const reflectedValue = await penalized(reflected);
         if (reflectedValue < bestValue) {
             // Expansion: further in the reflected direction.
-            const expanded = clamp(fromCenter(reflected, CONFIG.SOLVER_NM_EXPANSION));
+            const expanded = projectPoint(clamp(fromCenter(reflected, CONFIG.SOLVER_NM_EXPANSION)));
             const expandedValue = await penalized(expanded);
             if (expandedValue < reflectedValue) {
                 vertices[dimension] = expanded;
@@ -518,7 +590,9 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             // Contraction: outside when the reflection beat the worst,
             // inside otherwise.
             const contractDirection = reflectedValue < worstValue ? reflected : worst;
-            const contracted = clamp(fromCenter(contractDirection, CONFIG.SOLVER_NM_CONTRACTION));
+            const contracted = projectPoint(
+                clamp(fromCenter(contractDirection, CONFIG.SOLVER_NM_CONTRACTION)),
+            );
             const contractedValue = await penalized(contracted);
             const contractTarget = reflectedValue < worstValue ? reflectedValue : worstValue;
             if (contractedValue < contractTarget) {
@@ -527,11 +601,13 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             } else {
                 // Shrink toward the best vertex.
                 for (let i = 1; i <= dimension; i++) {
-                    const shrunk = clamp(
-                        (vertices[i] ?? []).map(
-                            (value, j) =>
-                                (best[j] ?? 0) +
-                                CONFIG.SOLVER_NM_SHRINK * (value - (best[j] ?? 0)),
+                    const shrunk = projectPoint(
+                        clamp(
+                            (vertices[i] ?? []).map(
+                                (value, j) =>
+                                    (best[j] ?? 0) +
+                                    CONFIG.SOLVER_NM_SHRINK * (value - (best[j] ?? 0)),
+                            ),
                         ),
                     );
                     vertices[i] = shrunk;
@@ -571,7 +647,7 @@ export async function createSolver(options: SolverOptions): Promise<Solver> {
             status,
             iterations,
             evaluations,
-            bestX: best?.x ?? clamp([...options.initial]),
+            bestX: best?.x ?? projectPoint(clamp([...options.initial])),
             bestObjective: best?.objective ?? null,
             bestViolation: best?.violation ?? Number.POSITIVE_INFINITY,
             message,

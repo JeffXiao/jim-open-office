@@ -168,6 +168,180 @@ export function parseConstraint(
     return { left, operator, right };
 }
 
+/**
+ * Parse a SUM formula: 'SUM(BM31:BM49)' (a leading '=', '$' markers,
+ * whitespace, and case are tolerated). Returns the summed range, or
+ * null for anything else — a plain cell, a different function, or an
+ * expression around the SUM. Only a bare SUM of one range is a
+ * projectable total; anything else stays with the penalty method.
+ */
+export function parseSumFormula(formula: string): RangeRef | null {
+    const cleaned = formula.trim().replace(/^\s*=/, '').trim();
+    const match = /^sum\s*\(\s*(.+?)\s*\)$/i.exec(cleaned);
+    if (match === null) {
+        return null;
+    }
+    return parseRange(match[1] ?? '');
+}
+
+/** One feasibility rule a trial point must satisfy. */
+type ProjectionRule =
+    | { kind: 'cell'; index: number; operator: ConstraintOperator; value: number }
+    | { kind: 'sum'; indices: number[]; operator: ConstraintOperator; value: number };
+
+/**
+ * Build a feasibility projector for a solve: a pure function mapping
+ * any trial point to a point the rules allow, without touching the
+ * sheet. Two kinds of constraint can be projected:
+ *
+ * - A range (or a single changing cell) against a number: each
+ *   changing cell it covers is clamped to the number (`>=` / `<=`)
+ *   or set to it (`=`).
+ * - A single cell whose formula is the SUM of (part of) the changing
+ *   range against a number: the covered cells are scaled
+ *   proportionally until their sum meets the number — scaling keeps
+ *   the relative allocation, which is what a total cap means for a
+ *   portfolio. A SUM that also covers cells outside the changing
+ *   range is skipped: its fixed part is not ours to scale.
+ *
+ * Not projectable, and left to the penalty method: a cell right side
+ * (it can move during the solve), and a left-side formula that is not
+ * a bare SUM (for example a volatility cell) — the projector cannot
+ * know how the changing cells move it without evaluating it, and
+ * evaluating it means writing the trial first. The projector is a
+ * repair, not a guarantee for mutually unsatisfiable constraints:
+ * cell rules and sum rules pull in opposite directions when they
+ * conflict, so they alternate a few rounds and finish on the cell
+ * rules; whatever conflict is left over, the penalty still catches.
+ */
+export function buildProjector(
+    changing: RangeRef,
+    constraints: SolverConstraint[],
+    formulaOf: (ref: CellRef) => string | null,
+): (trial: number[]) => number[] {
+    const indexOf = new Map<string, number>();
+    rangeCells(changing).forEach((ref, index) => {
+        indexOf.set(`${ref.row},${ref.col}`, index);
+    });
+    const rules: ProjectionRule[] = [];
+    for (const constraint of constraints) {
+        if (constraint.right.kind !== 'number') {
+            continue;
+        }
+        const leftCells = rangeCells(constraint.left);
+        if (leftCells.length === 1) {
+            const ref = leftCells[0] as CellRef;
+            const ownIndex = indexOf.get(`${ref.row},${ref.col}`);
+            if (ownIndex !== undefined) {
+                rules.push({
+                    kind: 'cell',
+                    index: ownIndex,
+                    operator: constraint.operator,
+                    value: constraint.right.value,
+                });
+                continue;
+            }
+            const formula = formulaOf(ref);
+            if (formula === null) {
+                continue;
+            }
+            const summed = parseSumFormula(formula);
+            if (summed === null) {
+                continue;
+            }
+            const indices: number[] = [];
+            let outside = false;
+            for (const cell of rangeCells(summed)) {
+                const index = indexOf.get(`${cell.row},${cell.col}`);
+                if (index === undefined) {
+                    outside = true;
+                    break;
+                }
+                indices.push(index);
+            }
+            if (outside || indices.length === 0) {
+                continue;
+            }
+            rules.push({
+                kind: 'sum',
+                indices,
+                operator: constraint.operator,
+                value: constraint.right.value,
+            });
+        } else {
+            for (const cell of leftCells) {
+                const index = indexOf.get(`${cell.row},${cell.col}`);
+                if (index !== undefined) {
+                    rules.push({
+                        kind: 'cell',
+                        index,
+                        operator: constraint.operator,
+                        value: constraint.right.value,
+                    });
+                }
+            }
+        }
+    }
+    if (rules.length === 0) {
+        return (trial: number[]): number[] => [...trial];
+    }
+    const applyCellRules = (point: number[]): void => {
+        for (const rule of rules) {
+            if (rule.kind !== 'cell') {
+                continue;
+            }
+            const current = point[rule.index] ?? 0;
+            if (rule.operator === '>=') {
+                point[rule.index] = Math.max(current, rule.value);
+            } else if (rule.operator === '<=') {
+                point[rule.index] = Math.min(current, rule.value);
+            } else {
+                point[rule.index] = rule.value;
+            }
+        }
+    };
+    const applySumRules = (point: number[]): void => {
+        for (const rule of rules) {
+            if (rule.kind !== 'sum') {
+                continue;
+            }
+            let sum = 0;
+            for (const index of rule.indices) {
+                sum += point[index] ?? 0;
+            }
+            if (rule.operator === '<=') {
+                if (sum > rule.value && sum !== 0) {
+                    const factor = rule.value / sum;
+                    for (const index of rule.indices) {
+                        point[index] = (point[index] ?? 0) * factor;
+                    }
+                }
+            } else if (rule.operator === '>=') {
+                if (sum < rule.value && sum > 0) {
+                    const factor = rule.value / sum;
+                    for (const index of rule.indices) {
+                        point[index] = (point[index] ?? 0) * factor;
+                    }
+                }
+            } else if (sum !== rule.value && sum > 0) {
+                const factor = rule.value / sum;
+                for (const index of rule.indices) {
+                    point[index] = (point[index] ?? 0) * factor;
+                }
+            }
+        }
+    };
+    return (trial: number[]): number[] => {
+        const point = [...trial];
+        for (let round = 0; round < CONFIG.SOLVER_PROJECTION_ROUNDS; round++) {
+            applyCellRules(point);
+            applySumRules(point);
+        }
+        applyCellRules(point);
+        return point;
+    };
+}
+
 /** One macrotask — long enough for Univer's async formula recalc to run. */
 function tick(): Promise<void> {
     return new Promise((resolve) => {
@@ -277,6 +451,20 @@ export class SolverModel {
             } else {
                 rangeCell.setValue({ v: null, f: null, p: null });
             }
+        });
+    }
+
+    /**
+     * Build the feasibility projector for a solve from the constraints.
+     * The left-side formulas are read once here — they do not change
+     * during a solve — so the projector itself is pure arithmetic and
+     * costs nothing per evaluation.
+     */
+    projector(changing: RangeRef, constraints: SolverConstraint[]): (trial: number[]) => number[] {
+        return buildProjector(changing, constraints, (ref) => {
+            const formulas = this.readFormulas({ start: ref, end: ref });
+            const formula = formulas[0]?.[0] ?? '';
+            return formula === '' ? null : formula;
         });
     }
 

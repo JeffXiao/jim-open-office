@@ -13,7 +13,11 @@
  * equal weights 1/19, objective 0.3*sqrt(19) = 1.3077. Problem 3: the
  * same ratio from 19 equal weights summing to 0.8764 (Jeff's total) —
  * the optimum requires the total to rise to 1.0, and the sum<=1
- * constraint must bind there. Also checks that
+ * constraint must bind there; the total is also sampled during the run
+ * and must never exceed 1.0. Problem 4: a 2-variable problem whose
+ * unconstrained optimum sums to 1.4 — the total and each weight are
+ * sampled during the run and must never exceed their caps (1.0 and
+ * 0.6). Also checks that
  * the dialog is modeless (the sheet is clickable and editable while it
  * is open, before solving and on the results view; its inputs are
  * enabled when it reopens after a solve), that Keep leaves the solution
@@ -140,6 +144,27 @@ try {
     async function waitForResults(timeout) {
         await page.locator('#solver-results').waitFor({ state: 'visible', timeout });
         return (await resultsList.textContent()) ?? '';
+    }
+
+    /**
+     * Wait for the results view while sampling cells: the solver writes
+     * every trial to the sheet, so the only way to prove a total never
+     * exceeds its cap mid-solve is to watch it during the run, not
+     * just at the end. `sample` runs between visibility checks;
+     * `intervalMs` paces it (0 = as fast as the round trips allow).
+     */
+    async function waitForResultsSampling(timeout, intervalMs, sample) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+            if (await page.locator('#solver-results').isVisible()) {
+                return (await resultsList.textContent()) ?? '';
+            }
+            await sample();
+            if (intervalMs > 0) {
+                await page.waitForTimeout(intervalMs);
+            }
+        }
+        throw new Error('results view did not appear within timeout');
     }
 
     /**
@@ -358,7 +383,7 @@ try {
     // Settle-based evaluation waits for the sheet recalculation on every
     // trial (~10ms on a small workbook), so the 19-variable solve needs
     // a long window.
-    const results2 = await waitForResults(600000);
+    const results2 = await waitForResults(900000);
     check('problem 2 reports an optimal solution', results2.includes('Optimal'), results2.slice(0, 120));
     let weightsOk = true;
     let worstDev = 0;
@@ -451,7 +476,25 @@ try {
         constraints3.trim(),
     );
     await page.locator('#solver-solve').click();
-    const resultsProblem3 = await waitForResults(600000);
+    // Sample the total while the 19-variable solve runs: the regression
+    // for Jeff's live report (a mid-solve total of 112.14%). The run
+    // takes minutes, so sample every 50ms — enough to catch the
+    // behaviour, since an unprojected run probes over the cap on a
+    // large fraction of its trials. The cap-time transfer polish adds
+    // ~5,500 evaluations to a 19-variable solve, so the timeout is
+    // 20 minutes, not 10.
+    let maxTotal3 = 0;
+    const resultsProblem3 = await waitForResultsSampling(1200000, 50, async () => {
+        const total = (await inspect('C1'))?.rawValue;
+        if (typeof total === 'number') {
+            maxTotal3 = Math.max(maxTotal3, total);
+        }
+    });
+    check(
+        'problem 3: total never exceeds 1.0 during the solve',
+        maxTotal3 <= 1 + 1e-9,
+        `max C1 seen = ${maxTotal3}`,
+    );
     const b1Solved3 = (await inspect('B1'))?.rawValue;
     check(
         'problem 3: objective improves to 1.3077',
@@ -482,6 +525,124 @@ try {
     }
     check('problem 3: all 19 weights = 1/19', weights3Ok, `worst deviation ${worstDev3.toFixed(5)}`);
     check('problem 3 results show the objective before/after', resultsProblem3.includes('1.2462'));
+    await page.locator('#solver-keep').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+
+    // ---- Problem 4: the total must never exceed its cap mid-solve. ----
+    // Maximize -(A1-0.7)^2-(A2-0.7)^2 subject to A1,A2 >= 0, total
+    // C1 = SUM(A1:A2) <= 1, each <= 0.6. The unconstrained optimum
+    // (0.7, 0.7) sums to 1.4, so the simplex's expansions probe totals
+    // over 1 — the live report was 112.14% mid-solve. The projector
+    // repairs those trials before they are written, so sampling the
+    // sheet during the run must never see the total over 1 or a weight
+    // over 0.6. The constrained optimum is (0.5, 0.5), objective -0.08.
+    await setCell('A1', 0.4);
+    await setCell('A2', 0.4);
+    await setCell('B1', '=-((A1-0.7)^2+(A2-0.7)^2)');
+    await setCell('C1', '=SUM(A1:A2)');
+    await page.waitForFunction(
+        () =>
+            typeof window.__aiOffice.inspectCell('B1')?.rawValue === 'number' &&
+            Math.abs(window.__aiOffice.inspectCell('B1').rawValue - -0.18) < 1e-9,
+        null,
+        { timeout: 5000 },
+    );
+    await page.waitForFunction(
+        () => {
+            const value = window.__aiOffice.inspectCell('C1')?.rawValue;
+            return typeof value === 'number' && Math.abs(value - 0.8) < 1e-9;
+        },
+        null,
+        { timeout: 5000 },
+    );
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await fillSolverForm({ objective: 'B1', goal: 'max', changing: 'A1:A2' });
+    // Replace problem 3's three constraints with problem 4's.
+    for (let i = 0; i < 3; i++) {
+        await page.locator('#solver-constraints li').first().click();
+        await page.locator('#solver-delete-constraint').click();
+    }
+    await addConstraint('A1:A2', '>=', '0');
+    await addConstraint('C1', '<=', '1');
+    await addConstraint('A1:A2', '<=', '0.6');
+    await page.locator('#solver-solve').click();
+    let maxTotal4 = 0;
+    let maxWeight4 = 0;
+    const results4 = await waitForResultsSampling(60000, 0, async () => {
+        const total = (await inspect('C1'))?.rawValue;
+        if (typeof total === 'number') {
+            maxTotal4 = Math.max(maxTotal4, total);
+        }
+        for (const address of ['A1', 'A2']) {
+            const value = (await inspect(address))?.rawValue;
+            if (typeof value === 'number') {
+                maxWeight4 = Math.max(maxWeight4, value);
+            }
+        }
+    });
+    check('problem 4 reports an optimal solution', results4.includes('Optimal'), results4.slice(0, 120));
+    check(
+        'problem 4: total never exceeds 1.0 during the solve',
+        maxTotal4 <= 1 + 1e-9,
+        `max C1 seen = ${maxTotal4}`,
+    );
+    check(
+        'problem 4: no weight exceeds its 0.6 cap during the solve',
+        maxWeight4 <= 0.6 + 1e-9,
+        `max weight seen = ${maxWeight4}`,
+    );
+    const a1Solved4 = (await inspect('A1'))?.rawValue;
+    const a2Solved4 = (await inspect('A2'))?.rawValue;
+    const b1Solved4 = (await inspect('B1'))?.rawValue;
+    const c1Solved4 = (await inspect('C1'))?.rawValue;
+    check(
+        'problem 4: optimum is (0.5, 0.5), objective -0.08, total 1.0',
+        typeof a1Solved4 === 'number' &&
+            Math.abs(a1Solved4 - 0.5) < 5e-3 &&
+            typeof a2Solved4 === 'number' &&
+            Math.abs(a2Solved4 - 0.5) < 5e-3 &&
+            typeof b1Solved4 === 'number' &&
+            Math.abs(b1Solved4 - -0.08) < 1e-3 &&
+            typeof c1Solved4 === 'number' &&
+            Math.abs(c1Solved4 - 1) < 5e-3,
+        `A1 = ${a1Solved4}, A2 = ${a2Solved4}, B1 = ${b1Solved4}, C1 = ${c1Solved4}`,
+    );
+    await page.locator('#solver-keep').click();
+    await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
+
+    // ---- Infeasible start: the solver must still end feasible. ----
+    // Set the weights to (0.7, 0.7) — total 1.4, over the cap — and
+    // solve again with the same parameters. The projector repairs the
+    // start before the first trial, so the saved best is feasible
+    // throughout and the final answer is the feasible optimum again,
+    // never the infeasible start. (Not sampled during this run: the
+    // sheet still shows the over-cap start until the first trial
+    // lands, which is the pre-solve value, not a trial.)
+    await setCell('A1', 0.7);
+    await setCell('A2', 0.7);
+    await page.locator('[data-action="solver"]').click();
+    await solverDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#solver-solve').click();
+    const results4b = await waitForResults(60000);
+    check(
+        'infeasible start reports an optimal solution',
+        results4b.includes('Optimal'),
+        results4b.slice(0, 120),
+    );
+    const a1Solved4b = (await inspect('A1'))?.rawValue;
+    const a2Solved4b = (await inspect('A2'))?.rawValue;
+    const c1Solved4b = (await inspect('C1'))?.rawValue;
+    check(
+        'infeasible start ends at the feasible optimum (0.5, 0.5), total 1.0',
+        typeof a1Solved4b === 'number' &&
+            Math.abs(a1Solved4b - 0.5) < 5e-3 &&
+            typeof a2Solved4b === 'number' &&
+            Math.abs(a2Solved4b - 0.5) < 5e-3 &&
+            typeof c1Solved4b === 'number' &&
+            Math.abs(c1Solved4b - 1) < 5e-3,
+        `A1 = ${a1Solved4b}, A2 = ${a2Solved4b}, C1 = ${c1Solved4b}`,
+    );
     await page.locator('#solver-keep').click();
     await solverDialog.waitFor({ state: 'hidden', timeout: 5000 });
 
@@ -671,7 +832,7 @@ try {
                 (await page.locator('#solver-changing').inputValue()) === 'BM31:BM49',
         );
         await page.locator('#solver-solve').click();
-        const resultsKeep19 = await waitForResults(600000);
+        const resultsKeep19 = await waitForResults(900000);
         const atResults = await readWeights();
         const moved = atResults.weights.some(
             (value, i) => typeof value === 'number' && Math.abs(value - keepStart[i]) > 5e-3,

@@ -362,4 +362,169 @@ describe('createSolver', () => {
             6,
         );
     });
+
+    it('never evaluates an infeasible point when a projector is supplied', async () => {
+        // Maximize -(x-0.7)^2-(y-0.7)^2 subject to x+y<=1, x,y>=0.
+        // The unconstrained optimum (0.7, 0.7) sums to 1.4, so the
+        // simplex's expansions would probe totals over 1 — the live
+        // report was a total of 112.14% mid-solve. With the projector
+        // every evaluated point is feasible, and the answer is still
+        // the boundary optimum (0.5, 0.5), objective -0.08.
+        const seen: number[][] = [];
+        const project = (point: number[]): number[] => {
+            const clamped = point.map((value) => Math.max(0, value));
+            const sum = (clamped[0] ?? 0) + (clamped[1] ?? 0);
+            if (sum <= 1) {
+                return clamped;
+            }
+            const factor = 1 / sum;
+            return clamped.map((value) => value * factor);
+        };
+        const solver = await createSolver({
+            goal: 'max',
+            initial: [0.4, 0.4],
+            lowerBounds: [0, 0],
+            upperBounds: [null, null],
+            evaluate: ([x = 0, y = 0]: number[]): SolverEvaluation => {
+                seen.push([x, y]);
+                return {
+                    objective: -((x - 0.7) ** 2 + (y - 0.7) ** 2),
+                    violations: [Math.max(0, x + y - 1)],
+                };
+            },
+            project,
+        });
+        await runToCompletion(solver);
+        expect(seen.length).toBeGreaterThan(0);
+        for (const [x = 0, y = 0] of seen) {
+            expect(x).toBeGreaterThanOrEqual(0);
+            expect(y).toBeGreaterThanOrEqual(0);
+            expect(x + y).toBeLessThanOrEqual(1 + 1e-9);
+        }
+        const state = solver.getState();
+        expect(state.status).toBe('optimal');
+        expect(state.bestObjective ?? Number.NaN).toBeCloseTo(-0.08, 3);
+        expect(state.bestX[0] ?? Number.NaN).toBeCloseTo(0.5, 2);
+        expect(state.bestX[1] ?? Number.NaN).toBeCloseTo(0.5, 2);
+    });
+
+    it('reports optimal (not max-iterations) for a projected 19-variable ratio', async () => {
+        // Same 19-variable ratio as above, but with the projector
+        // applied: every trial is clamped to >= 0, capped at 0.2 and
+        // scaled so the sum never exceeds 1 — the live Problem 2
+        // shape. The projection pins the simplex to the sum boundary,
+        // where its diameter shrinks too slowly to converge before
+        // the 10,000-iteration cap, so without the cap-time polish
+        // the run ground all the way to the cap and reported
+        // max-iterations even though the answer was exact. At the
+        // cap the transfer polish is forced — the projection leaves
+        // no infeasible point to signal a boundary optimum — and it
+        // confirms the point by failing to improve it, so the status
+        // is optimal and the answer is still the boundary optimum.
+        const n = 19;
+        const seen: number[][] = [];
+        const ratio = (w: number[]): number => {
+            const sum = w.reduce((a, b) => a + b, 0);
+            const squares = w.reduce((a, b) => a + b * b, 0);
+            return (0.08 * sum - 0.02) / (0.2 * Math.sqrt(squares));
+        };
+        const project = (point: number[]): number[] => {
+            const capped = point.map((value) => Math.min(0.2, Math.max(0, value)));
+            const sum = capped.reduce((a, b) => a + b, 0);
+            if (sum <= 1) {
+                return capped;
+            }
+            const factor = 1 / sum;
+            return capped.map((value) => value * factor);
+        };
+        const solver = await createSolver({
+            goal: 'max',
+            initial: Array.from({ length: n }, () => 0.05),
+            lowerBounds: Array.from({ length: n }, () => 0),
+            upperBounds: Array.from({ length: n }, () => null),
+            evaluate: (w: number[]): SolverEvaluation => {
+                seen.push([...w]);
+                return {
+                    objective: ratio(w),
+                    violations: [
+                        Math.max(0, w.reduce((a, b) => a + b, 0) - 1),
+                        ...w.map((v) => Math.max(0, v - 0.2)),
+                    ],
+                };
+            },
+            project,
+        });
+        await runToCompletion(solver);
+        expect(seen.length).toBeGreaterThan(0);
+        for (const w of seen) {
+            expect(w.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1 + 1e-9);
+            for (const value of w) {
+                expect(value).toBeGreaterThanOrEqual(0);
+                expect(value).toBeLessThanOrEqual(0.2 + 1e-9);
+            }
+        }
+        const state = solver.getState();
+        expect(state.status).toBe('optimal');
+        expect(state.bestObjective ?? Number.NaN).toBeCloseTo(0.3 * Math.sqrt(19), 3);
+        for (const weight of state.bestX) {
+            expect(weight).toBeCloseTo(1 / 19, 2);
+        }
+        // The projected run uses the full iteration budget before the
+        // cap-time polish, so it needs longer than the default timeout.
+    }, 60000);
+
+    it('evaluates infeasible points without a projector (negative control)', async () => {
+        // The same problem, no projector: the simplex must probe
+        // totals over 1 on its way to the boundary optimum. This is
+        // the control proving the test above would catch the old
+        // behaviour — it is not a failure of the penalty method,
+        // which still finds the answer.
+        const seen: number[][] = [];
+        const solver = await createSolver({
+            goal: 'max',
+            initial: [0.4, 0.4],
+            lowerBounds: [0, 0],
+            upperBounds: [null, null],
+            evaluate: ([x = 0, y = 0]: number[]): SolverEvaluation => {
+                seen.push([x, y]);
+                return {
+                    objective: -((x - 0.7) ** 2 + (y - 0.7) ** 2),
+                    violations: [Math.max(0, x + y - 1)],
+                };
+            },
+        });
+        await runToCompletion(solver);
+        expect(seen.some(([x = 0, y = 0]) => x + y > 1)).toBe(true);
+        const state = solver.getState();
+        expect(state.status).toBe('optimal');
+        expect(state.bestObjective ?? Number.NaN).toBeCloseTo(-0.08, 3);
+    });
+
+    it('reports infeasible (not max-iterations) when no feasible point exists', async () => {
+        // Maximize x subject to x <= -1 with x >= 0: no point satisfies
+        // both. The iteration cap is the one path that could report
+        // max-iterations with no feasible point saved — and the caller
+        // writes the saved best back on max-iterations, so that would
+        // put an infeasible "solution" in the sheet. The saved best
+        // must only ever hold a feasible allocation, so the run is
+        // infeasible instead and the caller restores the originals.
+        // maxIterations 1 forces the cap path deterministically: the
+        // first step cannot converge the simplex, so the second step
+        // hits the cap.
+        const solver = await createSolver({
+            goal: 'max',
+            initial: [0],
+            lowerBounds: [0],
+            upperBounds: [null],
+            evaluate: ([x = 0]: number[]): SolverEvaluation => ({
+                objective: x,
+                violations: [Math.max(0, x + 1)],
+            }),
+            maxIterations: 1,
+        });
+        await runToCompletion(solver);
+        const state = solver.getState();
+        expect(state.status).toBe('infeasible');
+        expect(state.bestViolation).toBeGreaterThan(1e-6);
+    });
 });

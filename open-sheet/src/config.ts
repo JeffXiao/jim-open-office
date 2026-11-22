@@ -35,6 +35,15 @@ export const CONFIG = Object.freeze({
      */
     SOLVER_STAGNATION_LIMIT: 5000,
     SOLVER_FEASIBILITY_TOLERANCE: 1e-6,
+    /**
+     * Feasibility projection: rounds of alternating cell-rule and
+     * sum-rule passes when repairing a trial point (see
+     * buildProjector in src/solver/model.ts). One round suffices when
+     * the rules agree, as they do for a portfolio (non-negative
+     * weights, total capped); the extra rounds settle the cases where
+     * clamping and scaling pull against each other.
+     */
+    SOLVER_PROJECTION_ROUNDS: 3,
     SOLVER_INITIAL_PENALTY: 1,
     SOLVER_PENALTY_GROWTH: 10,
     SOLVER_MAX_OUTER_ROUNDS: 8,

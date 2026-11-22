@@ -150,7 +150,15 @@ non-negative, and method; a file without one leaves the dialog as it was.
 The engine is a pure Nelder-Mead simplex with a quadratic penalty for
 constraints, plus a sum-preserving transfer polish for boundary optima;
 it runs stepwise so the UI stays responsive, with progress in the status
-line and a Cancel button. The sheet bridge writes each trial vector with
+line and a Cancel button. Before any trial is written to the sheet it is
+projected onto the feasible set the constraints describe — per-cell
+bounds are clamped and a total (a `SUM` of the changing cells) is scaled
+back to its cap — so the sheet never shows a trial breaking a rule the
+projection can express (a total over 100%, a negative weight, a weight
+over its cap). A constraint whose left side is a formula the projection
+cannot read (for example a volatility cell) still relies on the penalty:
+the final answer respects it, but a trial mid-solve may show it over its
+limit. The sheet bridge writes each trial vector with
 one `setValues` call and waits for the sheet recalculation to settle
 before reading the objective and constraint sides — the only read that
 is correct when the objective is a formula built on other formulas
