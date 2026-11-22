@@ -29,6 +29,9 @@
           <button type="button" data-action="reset" aria-label="Reset to a blank workbook" title="Reset to a blank workbook">
             <svg aria-hidden="true"><use data-icon="reset"></use></svg><span>Reset</span>
           </button>
+          <button type="button" data-action="solver" aria-label="Open Solver" title="Open Solver">
+            <svg aria-hidden="true"><use data-icon="solver"></use></svg><span>Solver</span>
+          </button>
         </div>
         <div role="separator" aria-orientation="vertical"></div>
         <div role="group" aria-label="Account" class="auth-group">
@@ -72,6 +75,71 @@
         <button type="submit" value="cancel" autofocus>Cancel</button>
         <button type="submit" value="confirm">Open file</button>
       </form>
+    </dialog>
+    <dialog id="solver-dialog" closedby="any" aria-labelledby="solver-title">
+      <h2 id="solver-title">Solver Parameters</h2>
+      <p id="solver-error" class="hidden" role="alert"></p>
+      <form id="solver-form">
+        <div class="solver-field">
+          <label for="solver-objective">Set Objective:</label>
+          <input id="solver-objective" type="text" autocomplete="off" placeholder="e.g. BM60" />
+        </div>
+        <fieldset class="solver-fieldset">
+          <legend>To:</legend>
+          <label><input type="radio" name="solver-goal" value="max" checked /> Max</label>
+          <label><input type="radio" name="solver-goal" value="min" /> Min</label>
+          <label><input type="radio" name="solver-goal" value="value" /> Value Of:</label>
+          <input id="solver-target" type="text" inputmode="decimal" autocomplete="off" aria-label="Target value" />
+        </fieldset>
+        <div class="solver-field">
+          <label for="solver-changing">By Changing Variable Cells:</label>
+          <input id="solver-changing" type="text" autocomplete="off" placeholder="e.g. BM31:BM49" />
+        </div>
+        <div class="solver-field">
+          <label id="solver-constraints-label">Subject to the Constraints:</label>
+          <ul id="solver-constraints" class="solver-constraints" aria-labelledby="solver-constraints-label"></ul>
+          <div class="solver-constraint-edit">
+            <input id="solver-constraint-left" type="text" autocomplete="off" aria-label="Constraint left side" placeholder="Cell or range" />
+            <select id="solver-constraint-operator" aria-label="Constraint operator">
+              <option value="&gt;=">&ge;</option>
+              <option value="&lt;=">&le;</option>
+              <option value="=">=</option>
+            </select>
+            <input id="solver-constraint-right" type="text" autocomplete="off" aria-label="Constraint right side" placeholder="Number or cell" />
+          </div>
+          <div class="solver-constraint-actions">
+            <button type="button" id="solver-add-constraint">Add</button>
+            <button type="button" id="solver-change-constraint">Change</button>
+            <button type="button" id="solver-delete-constraint">Delete</button>
+          </div>
+        </div>
+        <label class="solver-check">
+          <input id="solver-nonnegative" type="checkbox" checked />
+          Make Unconstrained Variables Non-Negative
+        </label>
+        <div class="solver-field">
+          <label for="solver-method">Select a Solving Method:</label>
+          <select id="solver-method">
+            <option value="grg">GRG Nonlinear</option>
+            <option value="simplex" disabled>LP Simplex (not yet implemented)</option>
+            <option value="evolutionary" disabled>Evolutionary (not yet implemented)</option>
+          </select>
+        </div>
+        <p id="solver-progress" class="hidden" role="status"></p>
+        <div class="solver-actions">
+          <button type="button" id="solver-cancel-run" class="hidden">Cancel</button>
+          <button type="button" id="solver-close">Close</button>
+          <button type="submit" id="solver-solve">Solve</button>
+        </div>
+      </form>
+      <div id="solver-results" class="hidden">
+        <h3>Results</h3>
+        <dl id="solver-results-list"></dl>
+        <div class="solver-actions">
+          <button type="button" id="solver-restore">Restore Original Values</button>
+          <button type="button" id="solver-keep" autofocus>Keep Solution</button>
+        </div>
+      </div>
     </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>

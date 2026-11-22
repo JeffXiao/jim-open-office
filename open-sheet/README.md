@@ -76,8 +76,10 @@ Univer, not by our code.
 | `src/storage.ts` | IndexedDB save/load/delete of the snapshot. |
 | `src/exporter.ts` | Snapshot → SheetJS .xlsx (formulas preserved). |
 | `src/importer.ts` | Local .xlsx/.xls file → snapshot (the exporter's mirror). |
-| `src/ui.ts` | Toolbar, status live region, reset and open dialogs. |
+| `src/ui.ts` | Toolbar, status live region, reset, open, and Solver dialogs. |
 | `src/style.css` | Shell stylesheet (cascade layers, design tokens). |
+| `src/solver/engine.ts` | Pure optimizer (Nelder-Mead + penalty): no Univer dependency. |
+| `src/solver/model.ts` | Sheet bridge: address parsing, trial writes, formula evaluation. |
 
 ## Test hook
 
@@ -96,8 +98,12 @@ Two layers, each covering what the other cannot reach:
   multiple sheets), the .xlsx importer (values, formulas, formats, column
   widths, multiple sheets, grid growth, and an export→import round-trip),
   IndexedDB persistence (save/load/overwrite/delete, against a minimal
-  in-memory IndexedDB stand-in), and Google sign-in token decoding
-  (valid, wrong-issuer, expired, and malformed tokens).
+  in-memory IndexedDB stand-in), Google sign-in token decoding
+  (valid, wrong-issuer, expired, and malformed tokens), and the Solver
+  engine and address parsing (Rosenbrock and quadratic minima, a
+  constrained optimum, bounds, infeasible and unbounded problems,
+  max-iterations, cancellation, and a 19-variable ratio problem against
+  its known answer).
 - `node tests/verify.mjs` — the served-build check (Playwright): the app
   boots in a real browser, the Univer sheet renders, formulas recalculate,
   save/reload persists, export downloads, and the reset dialog works.
@@ -110,6 +116,33 @@ Two layers, each covering what the other cannot reach:
   contents (values, a recalculated formula, a formatted cell), and the
   import survives a reload. Delete `dist-import/` afterwards — it is a
   verification artifact, not part of the project.
+- `npx vite build --outDir dist-solver && node tests/verify-solver.mjs` —
+  the Solver in a real browser (its own port, 4175): a 2-variable
+  constrained optimum, a 19-variable ratio problem with the same shape as
+  a portfolio-weight problem (weights ≥ 0, sum ≤ 1, each ≤ 0.2), Cancel
+  restoring the original values, the dialog reopening prefilled, and a
+  validation error on an empty objective. Delete `dist-solver/`
+  afterwards — it is a verification artifact, not part of the project.
+
+## Solver
+
+A free, Excel-style Solver in the toolbar (no subscription). Set Objective,
+Max / Min / Value Of, By Changing Variable Cells (one contiguous range),
+constraints (cell or range, `>=` / `<=` / `=` against a number or a cell),
+"Make Unconstrained Variables Non-Negative", and GRG Nonlinear as the
+method (LP Simplex and Evolutionary are listed but not yet implemented).
+The engine is a pure Nelder-Mead simplex with a quadratic penalty for
+constraints, plus a sum-preserving transfer polish for boundary optima;
+it runs stepwise so the UI stays responsive, with progress in the status
+line and a Cancel button. The sheet bridge writes each trial vector with
+one `setValues` call and evaluates the objective and constraint formulas
+directly with the formula engine's batch API, because the sheet's own
+recalculation is debounced (~10ms) and a read right after a write still
+shows the previous value. Results show the objective before/after,
+iterations, and status; Keep Solution leaves the new values, Restore
+Original Values puts the pre-solve values back. v1 limits: one contiguous
+changing range, GRG-style only, no integer constraints, and a 19-variable
+problem takes about a minute to solve.
 
 ## Versions (pinned)
 
