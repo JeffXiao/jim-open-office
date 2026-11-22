@@ -19,6 +19,30 @@ export const CONFIG = Object.freeze({
     SHEET_NAME: 'Sheet1',
     /** How long to wait after the last edit before autosaving, in ms. */
     AUTOSAVE_DELAY_MS: 800,
+    /** Solver (Nelder-Mead + quadratic penalty) tuning. */
+    SOLVER_MAX_ITERATIONS: 10000,
+    SOLVER_TOLERANCE: 1e-6,
+    SOLVER_FEASIBILITY_TOLERANCE: 1e-6,
+    SOLVER_INITIAL_PENALTY: 1,
+    SOLVER_PENALTY_GROWTH: 10,
+    SOLVER_MAX_OUTER_ROUNDS: 8,
+    SOLVER_FORMULA_TIMEOUT_MS: 5000,
+    SOLVER_SETTLE_ATTEMPTS: 10,
+    SOLVER_POLISH_MAX_EVALUATIONS: 6000,
+    SOLVER_POLISH_PAIRS_PER_STEP: 10,
+    SOLVER_STEP_FRACTION: 0.1,
+    SOLVER_STEP_FALLBACK: 0.1,
+    SOLVER_STEPS_PER_SLICE: 10,
+    SOLVER_NON_FINITE_PENALTY: 1e15,
+    SOLVER_MAX_VIOLATION: 1e6,
+    SOLVER_UNBOUNDED_VALUE: 1e10,
+    SOLVER_NM_REFLECTION: 1,
+    SOLVER_NM_EXPANSION: 2,
+    SOLVER_NM_CONTRACTION: 0.5,
+    SOLVER_NM_SHRINK: 0.5,
+    /** Sheet limits (Excel-compatible): columns A–XFD, rows 1–1048576. */
+    SOLVER_MAX_COLUMNS: 16384,
+    SOLVER_MAX_ROWS: 1048576,
     /** Exported file name. */
     EXPORT_FILE_NAME: 'workbook.xlsx',
     /** File types the Open picker accepts. */
@@ -54,4 +78,9 @@ export const CONFIG = Object.freeze({
     STATUS_SIGN_IN_FAILED:
         'Google sign-in didn’t work — try again or keep working without signing in.',
     STATUS_SIGNED_OUT: 'Signed out — your workbook stays on this device.',
+    STATUS_SOLVER_INVALID: 'Solver parameters are not valid — check the dialog.',
+    STATUS_SOLVER_CANCELLED: 'Solver cancelled — original values restored.',
+    STATUS_SOLVER_INFEASIBLE:
+        'Solver could not find a feasible solution — original values restored.',
+    STATUS_SOLVER_RESTORED: 'Solver solution discarded — original values restored.',
 });
