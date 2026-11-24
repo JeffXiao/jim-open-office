@@ -136,6 +136,12 @@ export const CONFIG = Object.freeze({
     EXPORT_FILE_NAME: 'workbook.xlsx',
     /** File types the Open picker accepts. */
     OPEN_ACCEPT: '.xlsx,.xls',
+    /** Refuse very large uploads before allocating their contents in memory. */
+    OPEN_MAX_FILE_BYTES: 50 * 1024 * 1024,
+    /** Keep sheet-backed numerical solving responsive and bounded. */
+    SOLVER_MAX_VARIABLES: 100,
+    SOLVER_MAX_CONSTRAINTS: 100,
+    SOLVER_MAX_CONSTRAINT_CELLS: 1000,
     /**
      * Google sign-in (optional). Paste the OAuth 2.0 client ID here
      * (ends in .apps.googleusercontent.com; Authorized JavaScript origin
@@ -159,6 +165,7 @@ export const CONFIG = Object.freeze({
     STATUS_EXPORT_FAILED: 'Export failed — see the browser console.',
     STATUS_RESET: 'Workbook reset to a blank sheet.',
     STATUS_OPEN_FAILED: 'Couldn’t open that file — it may not be a valid spreadsheet file.',
+    STATUS_OPEN_TOO_LARGE: 'That spreadsheet is over the 50 MiB import limit.',
     STATUS_SAVE_FAILED: 'Save failed — see the browser console.',
     STATUS_SIGN_IN_NOT_SET_UP:
         'Google sign-in isn’t set up yet — add a client ID to use it.',

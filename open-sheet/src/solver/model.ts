@@ -357,6 +357,9 @@ export type OriginalCell = {
     value: number | string | boolean | null;
 };
 
+/** Raw values allowed in a changing range before numeric validation. */
+export type SolverCellValue = number | string | boolean | null;
+
 /** One evaluation: objective plus one violation amount per constraint cell. */
 export type ModelEvaluation = {
     objective: number | null;
@@ -391,11 +394,15 @@ export class SolverModel {
         return typeof raw === 'number' ? raw : null;
     }
 
-    /** Read a range as numbers, row-major; nulls where empty/non-numeric. */
-    readRange(range: RangeRef): (number | null)[][] {
+    /** Read raw cell values row-major, preserving non-numeric constants for Restore. */
+    readRange(range: RangeRef): SolverCellValue[][] {
         const raw = this.#sheet.getRange(rangeAddress(range)).getRawValues();
         return raw.map((row) =>
-            row.map((value) => (typeof value === 'number' ? value : null)),
+            row.map((value) =>
+                typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean'
+                    ? value
+                    : null,
+            ),
         );
     }
 
@@ -446,7 +453,7 @@ export class SolverModel {
             const rangeCell = this.#sheet.getRange(cellAddress(ref));
             if (original.formula !== null) {
                 rangeCell.setValue(original.formula);
-            } else if (typeof original.value === 'number') {
+            } else if (original.value !== null) {
                 rangeCell.setValue(original.value);
             } else {
                 rangeCell.setValue({ v: null, f: null, p: null });

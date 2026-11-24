@@ -278,6 +278,10 @@ export class App {
 
     /** Read a picked file and ask whether to replace the workbook with it. */
     private async handleOpenFile(file: File): Promise<void> {
+        if (file.size > CONFIG.OPEN_MAX_FILE_BYTES) {
+            this.setStatus(CONFIG.STATUS_OPEN_TOO_LARGE);
+            return;
+        }
         let opened: Awaited<ReturnType<typeof readXlsxFile>>;
         try {
             opened = await readXlsxFile(file);
@@ -443,6 +447,14 @@ export class App {
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
             return false;
         }
+        const changingCellCount = rangeSize(changing);
+        if (changingCellCount > CONFIG.SOLVER_MAX_VARIABLES) {
+            this.#shell?.setSolverError(
+                `By Changing Variable Cells can contain at most ${CONFIG.SOLVER_MAX_VARIABLES} cells.`,
+            );
+            this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
+            return false;
+        }
         if (
             objective.row >= changing.start.row &&
             objective.row <= changing.end.row &&
@@ -467,7 +479,15 @@ export class App {
             this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
             return false;
         }
+        if (constraints.length > CONFIG.SOLVER_MAX_CONSTRAINTS) {
+            this.#shell?.setSolverError(
+                `Solver supports at most ${CONFIG.SOLVER_MAX_CONSTRAINTS} constraints.`,
+            );
+            this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
+            return false;
+        }
         const parsedConstraints: SolverConstraint[] = [];
+        let constraintCellCount = 0;
         for (let index = 0; index < constraints.length; index++) {
             const input = constraints[index];
             const parsed = parseConstraint(input?.left ?? '', input?.operator ?? '', input?.right ?? '');
@@ -478,16 +498,41 @@ export class App {
                 this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
                 return false;
             }
+            constraintCellCount += rangeSize(parsed.left);
+            if (constraintCellCount > CONFIG.SOLVER_MAX_CONSTRAINT_CELLS) {
+                this.#shell?.setSolverError(
+                    `Constraints can cover at most ${CONFIG.SOLVER_MAX_CONSTRAINT_CELLS} cells in total.`,
+                );
+                this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
+                return false;
+            }
             parsedConstraints.push(parsed);
         }
         const model = new SolverModel(sheet);
         // Let any just-entered formula calculate before reading the start.
         const objectiveCurrent = model.readCell(objective);
         await model.settle(objective, objectiveCurrent);
-        const initial = model
-            .readRange(changing)
-            .flat()
-            .map((value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0));
+        const initialValues = model.readRange(changing).flat();
+        const formulas = model.readFormulas(changing).flat();
+        if (formulas.some((formula) => formula !== '')) {
+            this.#shell?.setSolverError('Changing Variable Cells cannot include formula cells.');
+            this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
+            return false;
+        }
+        if (
+            initialValues.some(
+                (value) =>
+                    value !== null &&
+                    (typeof value !== 'number' || !Number.isFinite(value)),
+            )
+        ) {
+            this.#shell?.setSolverError(
+                'Changing Variable Cells must contain only numbers or empty cells.',
+            );
+            this.setStatus(CONFIG.STATUS_SOLVER_INVALID);
+            return false;
+        }
+        const initial = initialValues.map((value) => (typeof value === 'number' ? value : 0));
         const originals = model.readOriginals(changing);
         this.#solverStartingState = { model, changing, originals };
         const objectiveBefore = model.readCell(objective);
@@ -513,7 +558,7 @@ export class App {
             }
             return result;
         };
-        const count = rangeSize(changing);
+        const count = changingCellCount;
         // Project trials onto the feasible set before they are written:
         // a trial that would break a projectable rule (a weight below
         // zero, over its cap, or a total over its cap) is repaired

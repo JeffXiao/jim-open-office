@@ -14,6 +14,10 @@ npm run build    # tsc + vite build -> dist/
 npm run preview  # serve the production build locally
 ```
 
+SheetJS is pinned to the publisher's 0.20.3 tarball from `cdn.sheetjs.com`.
+The npm registry copy of `xlsx` is outdated; keep the lockfile's URL and
+integrity hash when installing dependencies.
+
 ## What is in it
 
 - A working Univer Sheets editor (create/edit cells, formulas with
@@ -24,6 +28,7 @@ npm run preview  # serve the production build locally
   save on page hide).
 - One-click .xlsx export via SheetJS, with formulas preserved so Excel
   recalculates.
+- Open accepts .xlsx and .xls files up to 50 MiB.
 - A minimal app shell: toolbar (Export .xlsx / Reset),
   the sheet, a status line, and a native-dialog reset confirmation.
 - An optional Sign in button (Google). Signing in is never required: the
@@ -137,6 +142,10 @@ Max / Min / Value Of, By Changing Variable Cells (one contiguous range),
 constraints (cell or range, `>=` / `<=` / `=` against a number or a cell),
 "Make Unconstrained Variables Non-Negative", and GRG Nonlinear as the
 method (LP Simplex and Evolutionary are listed but not yet implemented).
+For bounded browser work, a solve accepts at most 100 changing cells, 100
+constraints, and 1,000 cells across constraint left sides. Changing cells
+must be numeric constants or blank; formula cells and text/Boolean values
+are rejected.
 The dialog is modeless: it stays open while the sheet stays clickable,
 selectable, and editable — while setting the problem up, while a solve
 is running, and on the results view, so the solved values can be looked

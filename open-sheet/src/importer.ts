@@ -23,6 +23,7 @@ import {
     parseCellAddress,
     parseConstraint,
     parseRange,
+    rangeSize,
 } from './solver/model';
 
 /** What the Solver dialog needs, as imported from a saved Solver model. */
@@ -270,6 +271,12 @@ export function extractSolverParams(workbook: XLSX.WorkBook): ImportedSolverPara
             : '';
     const constraints: ImportedSolverParams['constraints'] = [];
     const count = refToNumber(byName.get('solver_num'));
+    if (
+        count !== null &&
+        (!Number.isSafeInteger(count) || count < 0 || count > CONFIG.SOLVER_MAX_CONSTRAINTS)
+    ) {
+        return null;
+    }
     const relOperators: Record<number, string> = { 1: '<=', 2: '=', 3: '>=' };
     if (count !== null) {
         for (let index = 1; index <= count; index++) {
@@ -292,7 +299,11 @@ export function extractSolverParams(workbook: XLSX.WorkBook): ImportedSolverPara
             }
             // Skip anything the dialog could not solve with (a range right
             // side, an unknown operator, or a bad address).
-            if (parseConstraint(left, operator, right) === null) {
+            const parsed = parseConstraint(left, operator, right);
+            if (
+                parsed === null ||
+                rangeSize(parsed.left) > CONFIG.SOLVER_MAX_CONSTRAINT_CELLS
+            ) {
                 continue;
             }
             constraints.push({ left, operator, right });
@@ -325,6 +336,9 @@ export async function readXlsxFile(file: File): Promise<{
     snapshot: IWorkbookData;
     solverParams: ImportedSolverParams | null;
 }> {
+    if (file.size > CONFIG.OPEN_MAX_FILE_BYTES) {
+        throw new Error('The selected spreadsheet is too large to open.');
+    }
     const data = await file.arrayBuffer();
     const bytes = new Uint8Array(data);
     if (!hasMagic(bytes, XLSX_MAGIC) && !hasMagic(bytes, XLS_MAGIC)) {
